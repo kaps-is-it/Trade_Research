@@ -29,12 +29,21 @@ export function providerReady(provider, env = process.env) {
 }
 export function modelTimeoutMs(provider, env = process.env) {
   if (provider !== "nvidia") return 60000;
-  const configured = Number(env.NVIDIA_NIM_TIMEOUT_MS || 120000);
+  const configured = Number(env.NVIDIA_NIM_TIMEOUT_MS || 300000);
   return Number.isInteger(configured) &&
     configured >= 1000 &&
-    configured <= 180000
+    configured <= 900000
     ? configured
-    : 120000;
+    : 300000;
+}
+export function modelOutputTokens(provider, env = process.env) {
+  if (provider !== "nvidia") return 1400;
+  const configured = Number(env.NVIDIA_NIM_MAX_TOKENS || 32768);
+  if (!Number.isInteger(configured) || configured < 1 || configured > 32768)
+    throw new Error(
+      "NVIDIA_NIM_MAX_TOKENS must be an integer from 1 to 32768.",
+    );
+  return configured;
 }
 export function modelConnection(provider, env = process.env) {
   const config = PROVIDERS[provider];
@@ -135,12 +144,13 @@ export async function requestDecision(
   const { base, headers } = modelConnection(account.provider, env),
     content = JSON.stringify(decisionInput(account, snapshot));
   const isOpenAI = account.provider === "openai";
+  const maxTokens = modelOutputTokens(account.provider, env);
   const body = isOpenAI
     ? {
         model: account.model,
         instructions: STRATEGY_INSTRUCTIONS,
         input: content,
-        max_output_tokens: 1400,
+        max_output_tokens: maxTokens,
         store: false,
       }
     : {
@@ -149,7 +159,7 @@ export async function requestDecision(
           { role: "system", content: STRATEGY_INSTRUCTIONS },
           { role: "user", content },
         ],
-        max_tokens: 1400,
+        max_tokens: maxTokens,
         stream: false,
         ...(account.provider === "nvidia"
           ? { temperature: 0.5, top_p: 1 }
@@ -172,7 +182,7 @@ export async function requestDecision(
   const data = await response.json();
   if (!isOpenAI && data.choices?.[0]?.finish_reason === "length")
     throw new Error(
-      "Model reached its output-token limit before completing the decision. No order was submitted.",
+      `Model reached the requested ${maxTokens.toLocaleString("en-US")}-token output allowance before completing the decision. No order was submitted.`,
     );
   const text = isOpenAI
     ? data.output

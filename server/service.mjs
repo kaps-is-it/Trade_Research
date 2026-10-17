@@ -15,6 +15,7 @@ import {
   PROVIDERS,
   MODEL_PRESETS,
   modelTimeoutMs,
+  modelOutputTokens,
   providerReady,
   modelConnection,
   requestDecision,
@@ -143,6 +144,7 @@ export class TradingService {
         label: p.label,
         configured: providerReady(id, this.env),
         models: MODEL_PRESETS[id] || [],
+        maxOutputTokens: modelOutputTokens(id, this.env),
       })),
       markets: Object.fromEntries(
         Object.entries(this.market.books).map(([base, b]) => [

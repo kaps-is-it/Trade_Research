@@ -8,6 +8,7 @@ import {
   requestDecision,
   MODEL_PRESETS,
   modelTimeoutMs,
+  modelOutputTokens,
 } from "./models.mjs";
 
 const account = () =>
@@ -118,6 +119,7 @@ test("NVIDIA NIM requests use a server-side credential and chat completions", as
     "https://integrate.api.nvidia.com/v1/chat/completions",
   );
   assert.equal(JSON.parse(observed.options.body).model, "test-model");
+  assert.equal(JSON.parse(observed.options.body).max_tokens, 32768);
   assert.equal(
     observed.options.headers.Authorization,
     "Bearer nvapi-test-only",
@@ -182,19 +184,65 @@ test("truncated model decisions are rejected before parsing or execution", async
           ],
         }),
     }),
-    /output-token limit/,
+    /32,768-token output allowance/,
   );
 });
 
 test("NVIDIA gets a bounded provider-specific timeout without changing other providers", () => {
-  assert.equal(modelTimeoutMs("nvidia", {}), 120000);
+  assert.equal(modelTimeoutMs("nvidia", {}), 300000);
   assert.equal(
     modelTimeoutMs("nvidia", { NVIDIA_NIM_TIMEOUT_MS: "180000" }),
     180000,
   );
   assert.equal(
     modelTimeoutMs("nvidia", { NVIDIA_NIM_TIMEOUT_MS: "99999999" }),
-    120000,
+    300000,
   );
   assert.equal(modelTimeoutMs("openai", {}), 60000);
+  assert.equal(
+    modelTimeoutMs("nvidia", { NVIDIA_NIM_TIMEOUT_MS: "900000" }),
+    900000,
+  );
+});
+
+test("NVIDIA output allowance is configurable and invalid settings never send a request", async () => {
+  assert.equal(modelOutputTokens("nvidia", {}), 32768);
+  assert.equal(
+    modelOutputTokens("nvidia", { NVIDIA_NIM_MAX_TOKENS: "16384" }),
+    16384,
+  );
+  assert.equal(
+    modelOutputTokens("openai", { NVIDIA_NIM_MAX_TOKENS: "32768" }),
+    1400,
+  );
+  for (const value of ["0", "32769", "1.5", "invalid"]) {
+    await assert.rejects(
+      requestDecision({ ...account(), provider: "nvidia" }, snapshot, {
+        env: { NVIDIA_NIM_API_KEY: "test-only", NVIDIA_NIM_MAX_TOKENS: value },
+        fetcher: () => {
+          throw new Error("Must not send");
+        },
+      }),
+      /NVIDIA_NIM_MAX_TOKENS/,
+    );
+  }
+  const result = await requestDecision(
+    { ...account(), provider: "nvidia" },
+    snapshot,
+    {
+      env: { NVIDIA_NIM_API_KEY: "test-only", NVIDIA_NIM_MAX_TOKENS: "16384" },
+      fetcher: async (_url, options) => {
+        assert.equal(JSON.parse(options.body).max_tokens, 16384);
+        return Response.json({
+          choices: [
+            {
+              finish_reason: "stop",
+              message: { content: '{"action":"hold","rationale":"No signal"}' },
+            },
+          ],
+        });
+      },
+    },
+  );
+  assert.equal(result.decision.action, "hold");
 });
