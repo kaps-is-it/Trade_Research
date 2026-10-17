@@ -94,3 +94,30 @@ test("valuations reject stale, failed and future-dated books", () => {
   m.errors.XRP = "Feed unavailable";
   assert.deepEqual(m.prices(), { BTC: "100" });
 });
+
+test("executable quote observations are bounded, sampled and never interpolate outages", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1000000 });
+  const m = new TradingMarket(async () =>
+    Response.json({
+      bids: [["99", "1"]],
+      asks: [["100", "1"]],
+      lastUpdateId: Date.now(),
+    }),
+  );
+  m.rules.BTC = { step: ".001" };
+  m.lastRules = Date.now();
+  await m.refresh("BTC");
+  await m.refresh("BTC");
+  assert.equal(m.observations("BTC").length, 1);
+  t.mock.timers.tick(25000);
+  await m.refresh("BTC");
+  assert.deepEqual(
+    m.observations("BTC").map((r) => r.time),
+    [1000000, 1025000],
+  );
+  t.mock.timers.tick(180001);
+  await m.refresh("BTC");
+  assert.equal(m.observations("BTC").length, 1);
+  m.errors.BTC = "offline";
+  assert.equal(m.observations("BTC", Date.now() - 1).length, 0);
+});

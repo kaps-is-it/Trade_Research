@@ -1,4 +1,5 @@
 import { validateStrategy } from "./strategy.mjs";
+import { pendingOrderContext } from "./market-context.mjs";
 import { randomUUID } from "node:crypto";
 import { ProviderLimiter } from "./rate-limit.mjs";
 import {
@@ -96,6 +97,13 @@ export class TradingService {
             "AI market and GTC limit orders enabled with observed-depth fills. Existing resting limits are preserved; saved run controls are unchanged.",
         });
       }
+      if (account.kind === "ai" && account.decisionReviewVersion !== 1) {
+        account.decisionReviewVersion = 1;
+        this.record(account, {
+          result:
+            "Active entry review upgraded: recent executable quotes, near-limit costs and current live order IDs are included in assessments. The AI may revise a waiting limit to a market order when its updated evidence justifies the cost. Existing strategy and pause state preserved.",
+        });
+      }
       await this.store.save(account);
     }
   }
@@ -131,7 +139,10 @@ export class TradingService {
       if (this.accounts.size >= 32)
         throw new Error("This workspace supports up to 32 accounts.");
       const account = newAccount(input);
-      if (account.kind === "ai") account.executionVersion = 3;
+      if (account.kind === "ai") {
+        account.executionVersion = 3;
+        account.decisionReviewVersion = 1;
+      }
       if (account.kind === "ai" && !providerReady(account.provider, this.env))
         account.status = "awaiting_model";
       this.record(account, {
@@ -436,6 +447,12 @@ export class TradingService {
           positions: positionMetrics(a, this.market.books, this.market.errors),
           bid: book.bids[0][0],
           ask: book.asks[0][0],
+          recentQuotes: this.market.observations?.(a.base) || [],
+          pendingOrderReview: pendingOrderContext(
+            a,
+            book,
+            this.market.observations?.(a.base) || [],
+          ),
           candles,
           rules: this.market.rules[a.base],
           available: balances(a).available,
@@ -581,6 +598,7 @@ export class TradingService {
         a.status = status;
         a.consecutiveErrors = 0;
         a.lastError = null;
+        a.lastDecisionError = null;
         a.lastDecisionAt = Date.now();
         a.lastDecisionAction = changed ? "discarded" : d.action;
         this.record(a, {
@@ -619,6 +637,8 @@ export class TradingService {
           a.status = "error";
           a.consecutiveErrors = (a.consecutiveErrors || 0) + 1;
           a.lastError = error.message;
+          if (error.code === "MODEL_OUTPUT")
+            a.lastDecisionError = { time: Date.now(), message: error.message };
           this.record(a, { result: error.message });
         });
       else if (!this.closed && this.accounts.get(id)?.enabled)

@@ -96,6 +96,115 @@ test("two runs evaluate independently and orders use a refreshed execution snaps
     f.store.close();
   }
 });
+
+test("near-miss evidence reaches the model and market replacement releases the limit without a duplicate buy", async () => {
+  let orderId, seen;
+  const f = fixture(async (a, s) => {
+    seen = decisionInput(a, s);
+    return {
+      decision: {
+        strategy,
+        action: "replace",
+        orderId,
+        type: "market",
+        quantity: "1",
+        price: null,
+        rationale:
+          "Observed stabilization just above limit; extra cost justified",
+      },
+      inputTokens: 1,
+      outputTokens: 1,
+    };
+  });
+  try {
+    const a = await f.create("1000");
+    f.market.observations = () => [
+      { time: Date.now() - 30000, bid: "99.99", ask: "100" },
+      { time: Date.now(), bid: "99.99", ask: "100" },
+    ];
+    await f.service.update(a.id, (r) => {
+      orderId = submitOrder(
+        r,
+        {
+          base: "BTC",
+          side: "buy",
+          type: "limit",
+          quantity: "1",
+          price: "99.99",
+        },
+        { received: Date.now(), bids: [["99", "10"]], asks: [["100", "10"]] },
+        rules,
+      ).id;
+    });
+    await f.service.evaluate(a.id);
+    assert.equal(
+      seen.pendingOrderReview[0].additionalNotionalVsLimitUSDT,
+      "0.01",
+    );
+    assert.equal(seen.recentExecutableQuotes.length, 2);
+    let r = f.service.accounts.get(a.id);
+    const replacement = r.orders.find((o) => o.id !== orderId);
+    assert.equal(r.orders.find((o) => o.id === orderId).status, "cancelled");
+    assert.equal(replacement.type, "market");
+    assert.equal(replacement.replacesOrderId, orderId);
+    const after = replacement.eligibleAt + 1;
+    await f.service.update(a.id, (row) =>
+      processOrders(
+        row,
+        "BTC",
+        {
+          received: after,
+          updateId: after,
+          bids: [["99", "10"]],
+          asks: [["100", "10"]],
+        },
+        after,
+      ),
+    );
+    r = f.service.accounts.get(a.id);
+    assert.equal(r.holdings.BTC.quantity, "1");
+    assert.equal(r.fills.length, 1);
+    assert.equal(
+      r.orders.filter((o) => ["open", "partial"].includes(o.status)).length,
+      0,
+    );
+  } finally {
+    await f.service.stop();
+    f.store.close();
+  }
+});
+
+test("invalid decision feedback is supplied on the next assessment and cleared after a valid response", async () => {
+  let attempts = 0;
+  const f = fixture(async (a, s) => {
+    if (!attempts++) {
+      const e = new Error("Model returned invalid JSON");
+      e.code = "MODEL_OUTPUT";
+      throw e;
+    }
+    assert.match(
+      decisionInput(a, s).previousDecisionError.message,
+      /invalid JSON/,
+    );
+    return {
+      decision: { strategy, action: "hold", rationale: "Corrected output" },
+      inputTokens: 1,
+      outputTokens: 1,
+    };
+  });
+  try {
+    const a = await f.create("1000");
+    await f.service.evaluate(a.id);
+    assert.equal(f.service.accounts.get(a.id).status, "error");
+    assert.equal(f.service.accounts.get(a.id).orders.length, 0);
+    await f.service.evaluate(a.id);
+    assert.equal(f.service.accounts.get(a.id).lastDecisionError, null);
+    assert.equal(f.service.accounts.get(a.id).consecutiveErrors, 0);
+  } finally {
+    await f.service.stop();
+    f.store.close();
+  }
+});
 test("pausing while a model is in flight prevents its order from being placed", async () => {
   let release, entered;
   const started = new Promise((r) => {

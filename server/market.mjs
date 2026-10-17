@@ -6,6 +6,7 @@ export class TradingMarket {
   rules = {};
   errors = {};
   candles = {};
+  quoteHistory = {};
   lastRules = 0;
   pending = new Map();
   constructor(fetcher = fetch) {
@@ -102,6 +103,19 @@ export class TradingMarket {
       };
       checkBook(book, Date.now());
       this.books[base] = book;
+      const history = (this.quoteHistory[base] || []).filter(
+        (row) =>
+          row.time >= book.received - 180000 && row.time <= book.received,
+      );
+      // Sample real executable quotes at most once a second; do not interpolate
+      // gaps or reconstruct missed prices after restarts/outages.
+      if (!history.length || book.received - history.at(-1).time >= 1000)
+        history.push({
+          time: book.received,
+          bid: book.bids[0][0],
+          ask: book.asks[0][0],
+        });
+      this.quoteHistory[base] = history.slice(-181);
       delete this.errors[base];
       return book;
     })()
@@ -152,6 +166,11 @@ export class TradingMarket {
           s,
           D(b.bids[0][0]).plus(b.asks[0][0]).div(2).toFixed(),
         ]),
+    );
+  }
+  observations(base, now = Date.now()) {
+    return (this.quoteHistory[base] || []).filter(
+      (r) => r.time <= now && r.time >= now - 180000,
     );
   }
 }

@@ -413,10 +413,14 @@ export function TradingPages({
           prices at their limit or better and may fill partially. A last-trade
           price touching the limit does not guarantee a fill. HOLD means no
           change, keeping existing positions and orders. The AI can cancel or
-          replace a pending order during a later review. Fresh market data and
-          exchange size/price rules are required. Queue position and market
-          impact are not modeled. Each account has an independent liquidity
-          budget. USDT is the account currency; no USD conversion is implied.
+          replace a pending order during a later review. When price holds near
+          an unfilled limit, the AI can review recent executable quotes, extra
+          entry cost, fees and risk, then replace it with a market order if
+          justified. Nearness alone never triggers an automatic purchase. Fresh
+          market data and exchange size/price rules are required. Queue position
+          and market impact are not modeled. Each account has an independent
+          liquidity budget. USDT is the account currency; no USD conversion is
+          implied.
         </p>
         <p>
           Pausing a run stops new AI decisions. Open orders continue to be

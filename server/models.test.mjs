@@ -1,4 +1,5 @@
 import { strategy } from "./test-fixtures.mjs";
+import { decisionSchema } from "./decision-schema.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { newAccount } from "./ledger.mjs";
@@ -50,7 +51,7 @@ test("model contract omits simulation labels, names and account UI metadata", ()
   assert(!("kind" in input.account));
 });
 
-test("GLM uses explicit high reasoning without reducing output allowance or changing other models", async () => {
+test("GLM uses explicit low reasoning without reducing output allowance or changing other models", async () => {
   const a = { ...account(), provider: "nvidia", model: "z-ai/glm-5.3" };
   const stages = [];
   await requestDecision(a, snapshot, {
@@ -58,9 +59,14 @@ test("GLM uses explicit high reasoning without reducing output allowance or chan
     onStage: (stage) => stages.push(stage),
     fetcher: async (_url, options) => {
       const body = JSON.parse(options.body);
-      assert.equal(body.reasoning_effort, "high");
+      assert.equal(body.reasoning_effort, "low");
       assert.equal(body.max_tokens, 32768);
       assert.equal(body.chat_template_kwargs.clear_thinking, true);
+      assert.equal(
+        body.guided_json.properties.strategy.properties.thesis.maxLength,
+        800,
+      );
+      assert.deepEqual(body.guided_json.properties.orderId.enum, [null]);
       return Response.json({
         choices: [
           {
@@ -95,6 +101,80 @@ test("GLM uses explicit high reasoning without reducing output allowance or chan
       }),
     /must be/,
   );
+});
+
+test("structured decision IDs and failure feedback use the current live account, not remembered orders", async () => {
+  const a = { ...account(), provider: "nvidia", model: "z-ai/glm-5.3" };
+  a.orders = [
+    { id: "closed-id", status: "cancelled" },
+    {
+      id: "live-id",
+      status: "open",
+      side: "buy",
+      base: "BTC",
+      remaining: "1",
+      reservePrice: "99",
+      type: "limit",
+      limit: "99",
+    },
+  ];
+  a.lastDecisionError = { time: 1, message: "Return valid JSON" };
+  assert.deepEqual(decisionSchema(a).properties.orderId.enum, [
+    null,
+    "live-id",
+  ]);
+  const input = decisionInput(a, {
+    ...snapshot,
+    recentQuotes: Array.from({ length: 80 }, (_, time) => ({
+      time,
+      bid: "99",
+      ask: "100",
+    })),
+    pendingOrderReview: [
+      { orderId: "live-id", additionalNotionalVsLimitUSDT: "1" },
+    ],
+  });
+  assert.equal(input.previousDecisionError.message, "Return valid JSON");
+  assert.equal(input.recentExecutableQuotes.length, 60);
+  assert.equal(input.pendingOrderReview[0].orderId, "live-id");
+  assert.equal(input.account.openOrders[0].remainingNotionalAtLimitUSDT, "99");
+  const request = (content) =>
+    requestDecision(a, snapshot, {
+      env: { NVIDIA_NIM_API_KEY: "test-only" },
+      fetcher: async () =>
+        Response.json({ choices: [{ message: { content } }] }),
+    });
+  await assert.rejects(
+    request('{"action":"hold", bad JSON'),
+    (e) => e.code === "MODEL_OUTPUT" && /invalid JSON/.test(e.message),
+  );
+  await assert.rejects(
+    request(
+      JSON.stringify({
+        action: "replace",
+        type: "market",
+        quantity: "1",
+        price: null,
+        orderId: "closed-id",
+        rationale: "Buy",
+        strategy,
+      }),
+    ),
+    (e) =>
+      e.code === "MODEL_OUTPUT" && /current account.openOrders/.test(e.message),
+  );
+  const valid = await request(
+    JSON.stringify({
+      action: "replace",
+      type: "market",
+      quantity: "1",
+      price: null,
+      orderId: "live-id",
+      rationale: "Extra cost justified",
+      strategy,
+    }),
+  );
+  assert.equal(valid.decision.orderId, "live-id");
 });
 test("malformed and incomplete model outputs never become orders", () => {
   assert.throws(() => parseDecision("not JSON"));
