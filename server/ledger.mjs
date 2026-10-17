@@ -53,8 +53,8 @@ export function newAccount(input, now = Date.now()) {
       !/^[\w./:@+-]{1,160}$/.test(model))
   )
     throw new Error("Select a provider and enter its exact model ID.");
-  const maxOrderPercent = Number(input.maxOrderPercent ?? 25),
-    lossLimitPercent = Number(input.lossLimitPercent ?? 10);
+  const maxOrderPercent = Number(input.maxOrderPercent ?? 100),
+    lossLimitPercent = Number(input.lossLimitPercent ?? 100);
   if (
     ![maxOrderPercent, lossLimitPercent].every(
       (n) => Number.isFinite(n) && n >= 1 && n <= 100,
@@ -200,6 +200,7 @@ export function submitOrder(account, input, book, rules, now = Date.now()) {
     throw new Error("Insufficient available crypto holdings.");
   if (
     account.kind === "ai" &&
+    input.side === "buy" &&
     quantity
       .mul(price)
       .gt(D(account.initial).mul(account.maxOrderPercent).div(100))
@@ -278,7 +279,7 @@ export function processOrders(account, base, book, now = Date.now()) {
           Decimal.max(0, spendable.div(price.mul(D(1).plus(FEE)))),
         );
       }
-      if (account.kind === "ai")
+      if (account.kind === "ai" && order.side === "buy")
         amount = Decimal.min(
           amount,
           Decimal.max(
@@ -302,12 +303,31 @@ export function processOrders(account, base, book, now = Date.now()) {
           cost: "0",
           realized: "0",
         });
+      if (holding.entryValue === undefined) {
+        holding.entryValue = D(holding.cost).div(D(1).plus(FEE)).toFixed();
+        holding.entryFees = D(holding.cost).minus(holding.entryValue).toFixed();
+      }
       if (order.side === "buy") {
+        if (D(holding.quantity).isZero()) holding.entryAt = now;
+        holding.lastEntryAt = now;
+        holding.entryValue = D(holding.entryValue || 0)
+          .plus(total)
+          .toFixed();
+        holding.entryFees = D(holding.entryFees || 0)
+          .plus(fee)
+          .toFixed();
         account.cash = D(account.cash).minus(total).minus(fee).toFixed();
         holding.quantity = D(holding.quantity).plus(amount).toFixed();
         holding.cost = D(holding.cost).plus(total).plus(fee).toFixed();
       } else {
-        const basis = D(holding.cost).mul(amount).div(holding.quantity);
+        const proportion = amount.div(holding.quantity);
+        const basis = D(holding.cost).mul(proportion);
+        holding.entryValue = D(holding.entryValue || 0)
+          .mul(D(1).minus(proportion))
+          .toFixed();
+        holding.entryFees = D(holding.entryFees || 0)
+          .mul(D(1).minus(proportion))
+          .toFixed();
         account.cash = D(account.cash).plus(total).minus(fee).toFixed();
         holding.realized = D(holding.realized)
           .plus(total)
@@ -357,4 +377,81 @@ export function processOrders(account, base, book, now = Date.now()) {
   }
   account.fills = account.fills.slice(0, 1000);
   return changed;
+}
+
+// AI decisions execute in the same persisted update. This deliberately models
+// a full quote fill, without depth/queue/market-impact simulation. Manual orders
+// retain the depth-based engine above.
+export function executeAIOrder(account, input, book, rules, now = Date.now()) {
+  if (account.kind !== "ai")
+    throw new Error("Immediate execution requires an AI account.");
+  if (input.type !== "market")
+    throw new Error(
+      "AI trades execute immediately; use hold to wait for an entry condition.",
+    );
+  const working = structuredClone(account);
+  const order = submitOrder(working, input, book, rules, now);
+  order.eligibleAt = now;
+  order.execution = "immediate_quote";
+  const quoteBook = {
+    ...book,
+    updateId: order.id,
+    step:
+      rules.marketStep && D(rules.marketStep).gt(0)
+        ? rules.marketStep
+        : rules.step,
+    asks: [[book.asks[0][0], order.quantity]],
+    bids: [[book.bids[0][0], order.quantity]],
+  };
+  const allOrders = working.orders;
+  working.orders = [order];
+  processOrders(working, input.base, quoteBook, now);
+  working.orders = allOrders;
+  if (order.status !== "filled")
+    throw new Error("Immediate order could not be fully executed.");
+  Object.assign(account, working);
+  return order;
+}
+export function positionMetrics(account, books, errors = {}, now = Date.now()) {
+  return Object.entries(account.holdings)
+    .filter(([, h]) => D(h.quantity).gt(0))
+    .map(([base, h]) => {
+      const book = books[base];
+      const fresh =
+        book &&
+        !errors[base] &&
+        now >= book.received &&
+        now - book.received <= 5000;
+      const qty = D(h.quantity),
+        cost = D(h.cost);
+      const entryValue =
+        h.entryValue === undefined ? cost.div(D(1).plus(FEE)) : D(h.entryValue);
+      const mark = fresh
+        ? D(book.bids[0][0]).plus(book.asks[0][0]).div(2)
+        : null;
+      const value = mark?.mul(qty);
+      const exitValue = fresh
+        ? D(book.bids[0][0]).mul(qty).mul(D(1).minus(FEE))
+        : null;
+      return {
+        base,
+        quantity: h.quantity,
+        invested: h.cost,
+        averageEntry: entryValue.div(qty).toFixed(),
+        entryFees: cost.minus(entryValue).toFixed(),
+        entryAt: h.entryAt || null,
+        lastEntryAt: h.lastEntryAt || null,
+        mark: mark?.toFixed() ?? null,
+        value: value?.toFixed() ?? null,
+        unrealized: value?.minus(cost).toFixed() ?? null,
+        unrealizedPercent:
+          value && cost.gt(0)
+            ? value.minus(cost).div(cost).mul(100).toFixed()
+            : null,
+        estimatedExitValue: exitValue?.toFixed() ?? null,
+        estimatedNetPnl: exitValue?.minus(cost).toFixed() ?? null,
+        received: book?.received || null,
+        stale: !fresh,
+      };
+    });
 }

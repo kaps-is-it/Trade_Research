@@ -1,3 +1,4 @@
+import { PositionDashboard, StrategyPanel } from "./PositionDashboard";
 import { useEffect, useState } from "react";
 import {
   Activity,
@@ -290,6 +291,8 @@ export function TradingPages({
             </span>
           </div>
           <AccountMetrics account={account} />
+          <PositionDashboard account={account} offline={!!error} />
+          {mode === "ai" && <StrategyPanel account={account} />}
           {mode === "manual" ? (
             <div className="paper-desk">
               <section className="panel paper-chart">
@@ -385,13 +388,16 @@ export function TradingPages({
         </summary>
         <p>
           All orders stay inside this paper engine. Example fee: 0.10% per fill.
-          Orders wait at least 500 ms and use the next available top-20 Binance
-          order book, polled about every 2 seconds. Market orders consume
-          displayed depth; unfilled remainders are cancelled. Limits fill only
-          against executable opposite-side depth, with no queue-position claim.
-          Fresh market data and exchange size/price rules are required. No
-          market impact is modeled. Each simulation has an independent liquidity
-          budget. USDT is the account currency; no USD conversion is implied.
+          AI buys and sells fill immediately in full at a fresh Binance ask or
+          bid, with no simulated depth or market impact. To wait, the AI holds
+          and revisits its saved conditions. Manual orders wait at least 500 ms
+          and use the next available top-20 order book, polled about every
+          second. Manual market orders consume displayed depth; unfilled
+          remainders are cancelled. Limits fill only against executable
+          opposite-side depth, with no queue-position claim. Fresh market data
+          and exchange size/price rules are required. No market impact is
+          modeled. Each simulation has an independent liquidity budget. USDT is
+          the account currency; no USD conversion is implied.
         </p>
         <p>
           Pausing a run stops new AI decisions. Open orders continue to be
@@ -508,8 +514,8 @@ function CreateAccount({
     ),
     [model, setModel] = useState(""),
     [base, setBase] = useState("BTC"),
-    [maxOrderPercent, setMaxOrder] = useState("25"),
-    [lossLimitPercent, setLossLimit] = useState("10"),
+    [maxOrderPercent, setMaxOrder] = useState("100"),
+    [lossLimitPercent, setLossLimit] = useState("100"),
     [models, setModels] = useState<{ id: string; label: string }[]>([]),
     [catalogError, setCatalogError] = useState(""),
     [loading, setLoading] = useState(false);
@@ -654,7 +660,7 @@ function CreateAccount({
               </select>
             </label>
             <label>
-              Maximum order · % of initial capital
+              Entry order ceiling · % of initial capital
               <input
                 type="number"
                 min="1"
@@ -665,7 +671,7 @@ function CreateAccount({
               />
             </label>
             <label>
-              Stop new trading after loss · %
+              Owner emergency account stop · loss %
               <input
                 type="number"
                 min="1"
@@ -682,7 +688,9 @@ function CreateAccount({
         <div className="model-connection-note">
           <span>
             Continuous evaluation. No daily cap. NVIDIA shares 30 requests/min
-            across all runs.
+            across all runs. New runs default to full-capital entry capacity and
+            no early account loss stop. These owner controls do not create sell
+            orders.
           </span>
           <span className={ready ? "positive" : "muted"}>
             {ready
@@ -1074,7 +1082,7 @@ function AIActivity({
             <dd>{a.model}</dd>
           </div>
           <div>
-            <dt>Order ceiling</dt>
+            <dt>Entry order ceiling</dt>
             <dd>
               {money(
                 new Decimal(a.initial)
@@ -1086,7 +1094,7 @@ function AIActivity({
             </dd>
           </div>
           <div>
-            <dt>Loss stop</dt>
+            <dt>Account emergency stop</dt>
             <dd>{a.lossLimitPercent}% of initial capital</dd>
           </div>
           <div>
@@ -1213,7 +1221,8 @@ function AccountRecords({
                   <th>Market / time</th>
                   <th>Side / type</th>
                   <th>Quantity / filled</th>
-                  <th>Limit · USDT</th>
+                  <th>Requested / average fill · USDT</th>
+                  <th>Executed value / fee · USDT</th>
                   <th>Status</th>
                   <th />
                 </tr>
@@ -1238,10 +1247,34 @@ function AccountRecords({
                       <small>{quantityText(o.filled)} filled</small>
                     </td>
                     <td className="mono">
-                      {o.limit ? money(o.limit, 4) : "Market"}
+                      {o.limit
+                        ? money(o.limit, 4)
+                        : o.execution === "immediate_quote"
+                          ? "Immediate market"
+                          : "Market"}
+                      <small>
+                        {Number(o.filled) > 0
+                          ? `Average fill ${money(new Decimal(o.total).div(o.filled).toFixed(), 4)}`
+                          : "Not purchased / sold yet"}
+                      </small>
+                    </td>
+                    <td className="mono">
+                      {money(o.total)}
+                      <small>Fee {money(o.fee, 4)}</small>
+                      {openOrder(o.status) && o.limit && (
+                        <small>
+                          Pending value{" "}
+                          {money(
+                            new Decimal(o.remaining).mul(o.limit).toFixed(),
+                          )}
+                        </small>
+                      )}
                     </td>
                     <td>
                       {o.status}
+                      <small>
+                        {o.closed ? `Closed ${time(o.closed)}` : ""}
+                      </small>
                       <small>{o.reason}</small>
                     </td>
                     <td>
@@ -1314,6 +1347,7 @@ function AccountRecords({
                   <th>Side</th>
                   <th>Quantity</th>
                   <th>Price · USDT</th>
+                  <th>Value · USDT</th>
                   <th>Fee · USDT</th>
                 </tr>
               </thead>
@@ -1327,6 +1361,9 @@ function AccountRecords({
                     </td>
                     <td className="mono">{quantityText(f.quantity)}</td>
                     <td className="mono">{money(f.price, 4)}</td>
+                    <td className="mono">
+                      {money(new Decimal(f.quantity).mul(f.price).toFixed())}
+                    </td>
                     <td className="mono">{money(f.fee, 4)}</td>
                   </tr>
                 ))}
@@ -1349,35 +1386,49 @@ function DecisionJournal({ account }: { account: TradingAccount }) {
         <h2>Decision journal</h2>
         <span className="trading-caption">Evidence, actions and outcomes</span>
       </div>
-      {account.journal.map((j) => (
-        <details key={j.id}>
-          <summary>
-            <span
-              className={`decision-action ${j.status === "risk_blocked" ? "negative" : ""}`}
-            >
-              {j.action?.toUpperCase() || "EVENT"}
-            </span>
-            <span>{j.rationale || j.result}</span>
-            <time>{time(j.time)}</time>
-          </summary>
-          <div>
-            <p>{j.result}</p>
-            {j.evidence && (
-              <p>
-                Snapshot {time(j.asOf)} · {j.evidence.closedCandles} closed
-                candles · bid {j.evidence.bid} / ask {j.evidence.ask} ·
-                available {j.evidence.available} USDT
-              </p>
-            )}
-            <small>
-              Record {j.id}
-              {j.inputTokens !== undefined
-                ? ` · ${j.inputTokens} input / ${j.outputTokens} output tokens`
-                : ""}
-            </small>
-          </div>
-        </details>
-      ))}
+      <div
+        className="decision-journal-scroll"
+        tabIndex={0}
+        role="region"
+        aria-label="Scrollable decision history"
+      >
+        {account.journal.map((j) => (
+          <details key={j.id}>
+            <summary>
+              <span
+                className={`decision-action ${j.status === "risk_blocked" ? "negative" : ""}`}
+              >
+                {j.action?.toUpperCase() || "EVENT"}
+              </span>
+              <span>{j.rationale || j.result}</span>
+              <time>{time(j.time)}</time>
+            </summary>
+            <div>
+              <p>{j.result}</p>
+              {j.strategy && (
+                <p>
+                  Strategy revision {j.strategy.revision}: {j.strategy.thesis}
+                  <br />
+                  Exit plan: {j.strategy.exitConditions}
+                </p>
+              )}
+              {j.evidence && (
+                <p>
+                  Snapshot {time(j.asOf)} · {j.evidence.closedCandles} closed
+                  candles · bid {j.evidence.bid} / ask {j.evidence.ask} ·
+                  available {j.evidence.available} USDT
+                </p>
+              )}
+              <small>
+                Record {j.id}
+                {j.inputTokens !== undefined
+                  ? ` · ${j.inputTokens} input / ${j.outputTokens} output tokens`
+                  : ""}
+              </small>
+            </div>
+          </details>
+        ))}
+      </div>
     </section>
   );
 }

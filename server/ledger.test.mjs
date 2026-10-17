@@ -167,6 +167,7 @@ test("accounts have independent money, models, holdings and liquidity budgets", 
       capital: "300",
       provider: "openrouter",
       model: "vendor/model-b",
+      maxOrderPercent: 25,
     });
   buy(a, { quantity: "1" });
   buy(b, { quantity: ".5" });
@@ -177,4 +178,10 @@ test("accounts have independent money, models, holdings and liquidity budgets", 
   assert.equal(b.cash, "249.95");
   assert.equal(a.cash, "899.9");
   assert.throws(() => buy(b, { quantity: "1" }), /ceiling/);
+});
+
+test("new AI runs leave strategy choices open unless the owner sets tighter limits", () => {
+  const a = newAccount({ kind: "ai", capital: "1000", model: "test" });
+  assert.equal(a.maxOrderPercent, 100);
+  assert.equal(a.lossLimitPercent, 100);
 });

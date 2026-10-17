@@ -1,6 +1,37 @@
 import { useCallback, useEffect, useState } from "react";
 import RUNTIME from "../../shared/public-runtime.json";
 
+export interface Strategy {
+  thesis: string;
+  entryConditions: string;
+  holdConditions: string;
+  exitConditions: string;
+  invalidation: string;
+  memory: string;
+  entryReadiness: number;
+  exitUrgency: number;
+  revision: number;
+  updatedAt: number;
+  marketAsOf: number;
+  decisionId: string;
+}
+export interface Position {
+  base: string;
+  quantity: string;
+  invested: string;
+  averageEntry: string;
+  entryFees: string;
+  entryAt: number | null;
+  lastEntryAt: number | null;
+  mark: string | null;
+  value: string | null;
+  unrealized: string | null;
+  unrealizedPercent: string | null;
+  estimatedExitValue: string | null;
+  estimatedNetPnl: string | null;
+  received: number | null;
+  stale: boolean;
+}
 export interface PaperOrder {
   id: string;
   base: string;
@@ -15,6 +46,8 @@ export interface PaperOrder {
   total: string;
   fee: string;
   reason?: string;
+  execution?: string;
+  closed?: number;
 }
 export interface PaperFill {
   id: string;
@@ -27,6 +60,7 @@ export interface PaperFill {
   time: number;
 }
 export interface JournalEntry {
+  strategy?: Strategy;
   id: string;
   time: number;
   action?: string;
@@ -44,6 +78,8 @@ export interface JournalEntry {
   outputTokens?: number;
 }
 export interface TradingAccount {
+  strategy?: Strategy;
+  positions?: Position[];
   totalFees: string;
   fillCount: number;
   id: string;
@@ -183,7 +219,7 @@ export function useTrading(base: string) {
       }
     };
     void load();
-    const timer = setInterval(() => void load(), 2000);
+    const timer = setInterval(() => void load(), 1000);
     return () => {
       disposed = true;
       clearInterval(timer);

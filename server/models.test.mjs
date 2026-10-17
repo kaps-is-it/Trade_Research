@@ -1,3 +1,4 @@
+import { strategy } from "./test-fixtures.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { newAccount } from "./ledger.mjs";
@@ -63,7 +64,9 @@ test("malformed and incomplete model outputs never become orders", () => {
     ),
   );
   assert.equal(
-    parseDecision('{"action":"hold","rationale":"Wait"}').action,
+    parseDecision(
+      JSON.stringify({ action: "hold", rationale: "Wait", strategy }),
+    ).action,
     "hold",
   );
 });
@@ -80,7 +83,11 @@ test("OpenAI requests use a server-side credential and parse Responses output", 
             content: [
               {
                 type: "output_text",
-                text: '{"action":"hold","rationale":"No signal"}',
+                text: JSON.stringify({
+                  action: "hold",
+                  rationale: "No signal",
+                  strategy,
+                }),
               },
             ],
           },
@@ -108,7 +115,15 @@ test("NVIDIA NIM requests use a server-side credential and chat completions", as
       observed = { url, options };
       return Response.json({
         choices: [
-          { message: { content: '{"action":"hold","rationale":"No signal"}' } },
+          {
+            message: {
+              content: JSON.stringify({
+                action: "hold",
+                rationale: "No signal",
+                strategy,
+              }),
+            },
+          },
         ],
         usage: { input_tokens: 10, output_tokens: 4 },
       });
@@ -213,7 +228,7 @@ test("NVIDIA output allowance is configurable and invalid settings never send a 
   );
   assert.equal(
     modelOutputTokens("openai", { NVIDIA_NIM_MAX_TOKENS: "32768" }),
-    1400,
+    4096,
   );
   for (const value of ["0", "32769", "1.5", "invalid"]) {
     await assert.rejects(
@@ -237,7 +252,13 @@ test("NVIDIA output allowance is configurable and invalid settings never send a 
           choices: [
             {
               finish_reason: "stop",
-              message: { content: '{"action":"hold","rationale":"No signal"}' },
+              message: {
+                content: JSON.stringify({
+                  action: "hold",
+                  rationale: "No signal",
+                  strategy,
+                }),
+              },
             },
           ],
         });

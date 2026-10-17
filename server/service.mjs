@@ -1,3 +1,4 @@
+import { validateStrategy } from "./strategy.mjs";
 import { randomUUID } from "node:crypto";
 import { ProviderLimiter } from "./rate-limit.mjs";
 import {
@@ -7,6 +8,8 @@ import {
   balances,
   equity,
   submitOrder,
+  executeAIOrder,
+  positionMetrics,
   cancelOrder,
   processOrders,
   checkBook,
@@ -78,6 +81,19 @@ export class TradingService {
           order.status = "cancelled";
           order.reason = "Worker restarted before this market order completed.";
         }
+      if (account.kind === "ai" && account.executionVersion !== 2) {
+        for (const order of account.orders.filter((o) =>
+          ["open", "partial"].includes(o.status),
+        )) {
+          cancelOrder(account, order.id);
+          order.reason =
+            "Legacy waiting order cancelled for immediate AI execution upgrade.";
+          this.record(account, {
+            result: `Cancelled legacy waiting order ${order.id}; funds released. Resume for a fresh AI decision.`,
+          });
+        }
+        account.executionVersion = 2;
+      }
       await this.store.save(account);
     }
   }
@@ -113,6 +129,7 @@ export class TradingService {
       if (this.accounts.size >= 32)
         throw new Error("This workspace supports up to 32 accounts.");
       const account = newAccount(input);
+      if (account.kind === "ai") account.executionVersion = 2;
       if (account.kind === "ai" && !providerReady(account.provider, this.env))
         account.status = "awaiting_model";
       this.record(account, {
@@ -133,7 +150,7 @@ export class TradingService {
       serverTime: Date.now(),
       storage: this.store.kind || "sqlite",
       storageError: this.store.failed?.message || null,
-      cadenceSeconds: 2,
+      cadenceSeconds: 1,
       evaluationMode: "continuous",
       rateLimits: { nvidia: this.limiter.snapshot("nvidia") },
       symbols: SYMBOLS,
@@ -143,6 +160,8 @@ export class TradingService {
         depth: 20,
         limitFills:
           "Only executable opposite-side depth; no candle-touch or queue-position fills.",
+        aiExecution:
+          "Immediate full fill at fresh ask/bid; no depth or market impact model.",
         quote: "USDT",
       },
       providers: Object.entries(PROVIDERS).map(([id, p]) => ({
@@ -166,7 +185,12 @@ export class TradingService {
       ),
       accounts: [...this.accounts.values()].map((a) => {
         const { consumed, ...publicAccount } = a;
-        return { ...publicAccount, ...balances(a), equity: equity(a, prices) };
+        return {
+          ...publicAccount,
+          ...balances(a),
+          equity: equity(a, prices),
+          positions: positionMetrics(a, this.market.books, this.market.errors),
+        };
       }),
     };
   }
@@ -369,6 +393,12 @@ export class TradingService {
       }
       const snapshot = {
         asOf: Date.now(),
+        previousEvaluationAt: account.lastEvaluation || null,
+        positions: positionMetrics(
+          account,
+          this.market.books,
+          this.market.errors,
+        ),
         bid: book.bids[0][0],
         ask: book.asks[0][0],
         candles,
@@ -420,6 +450,17 @@ export class TradingService {
         if (controller.signal.aborted || !a.enabled) return;
         const decisionId = randomUUID(),
           d = result.decision;
+        const strategy = validateStrategy(d.strategy);
+        if (!D(a.holdings[a.base]?.quantity || 0).gt(0))
+          strategy.exitUrgency = 0;
+        a.strategy = {
+          ...strategy,
+          revision: (a.strategy?.revision || 0) + 1,
+          updatedAt: Date.now(),
+          marketAsOf: snapshot.asOf,
+          decisionId,
+        };
+
         a.inputTokens += result.inputTokens;
         a.outputTokens += result.outputTokens;
         let outcome = "No order submitted.",
@@ -436,7 +477,7 @@ export class TradingService {
               throw new Error(
                 "Account valuation failed the execution-time loss check.",
               );
-            const order = submitOrder(
+            const order = executeAIOrder(
               a,
               {
                 base: a.base,
@@ -449,7 +490,7 @@ export class TradingService {
               executionBook,
               this.market.rules[a.base],
             );
-            outcome = `Order accepted: ${order.id}`;
+            outcome = `Filled ${order.filled} ${order.base} at average ${D(order.total).div(order.filled).toFixed()} USDT; value ${order.total} USDT; fee ${order.fee} USDT. Order ${order.id}`;
           }
         } catch (error) {
           outcome = error.message;
@@ -459,6 +500,7 @@ export class TradingService {
         a.consecutiveErrors = 0;
         this.record(a, {
           id: decisionId,
+          strategy: structuredClone(a.strategy),
           action: d.action,
           rationale: d.rationale,
           result: outcome,
@@ -526,7 +568,7 @@ export class TradingService {
     }
   }
   start() {
-    this.timer = setInterval(() => void this.tick(), 2000);
+    this.timer = setInterval(() => void this.tick(), 1000);
     void this.tick();
   }
   async stop() {
