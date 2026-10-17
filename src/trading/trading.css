@@ -333,6 +333,44 @@
 .paper-chart-area .chart-inner {
   height: 100%;
 }
+.simulation-chart {
+  min-width: 0;
+}
+.simulation-chart-heading {
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.simulation-chart-heading h2 {
+  margin: 0 0 5px;
+  font-size: 17px;
+}
+.simulation-chart-quote {
+  display: grid;
+  gap: 5px;
+  text-align: right;
+}
+.simulation-chart-quote strong {
+  font-size: 23px;
+  font-weight: 500;
+}
+.simulation-chart-quote small {
+  font: 11px var(--font-sans, sans-serif);
+  color: var(--muted);
+}
+.simulation-chart-toolbar {
+  flex-wrap: wrap;
+}
+.simulation-chart-fit {
+  margin-left: auto;
+}
+.simulation-chart-note {
+  margin: 0;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--muted);
+}
 .paper-ticket {
   padding: 22px;
   display: grid;

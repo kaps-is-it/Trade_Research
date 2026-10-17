@@ -1,4 +1,5 @@
 import { PositionDashboard, StrategyPanel } from "./PositionDashboard";
+import { SimulationChart } from "./SimulationChart";
 import { Fragment, useEffect, useState } from "react";
 import {
   Activity,
@@ -84,8 +85,8 @@ export function TradingPages({
     if (mode === "ai" && account) setBase(account.base);
   }, [mode, account?.id, account?.base]);
   useEffect(() => {
-    market.select(base, 300);
-  }, [base]);
+    if (mode === "manual") market.select(base, 300);
+  }, [base, mode]);
   const mutate = async (path: string, input: unknown) => {
     setPending(true);
     setNotice("");
@@ -305,6 +306,9 @@ export function TradingPages({
             </span>
           </div>
           <AccountMetrics account={account} />
+          {mode === "ai" && (
+            <SimulationChart base={account.base} state={state} dark={dark} />
+          )}
           <PositionDashboard account={account} offline={!!error} />
           {mode === "ai" && <StrategyPanel account={account} />}
           {mode === "manual" ? (
@@ -1084,6 +1088,13 @@ function AIActivity({
                 Evaluation elapsed: {elapsed}s · deadline{" "}
                 {time(progress.deadlineAt)}. Only completed, valid decisions can
                 submit orders.
+              </p>
+            )}
+            {a.enabled && a.status !== "error" && (
+              <p>
+                After each response, a fresh assessment starts automatically.
+                HOLD keeps monitoring; it does not stop the loop. Shared
+                provider limits can delay the next request.
               </p>
             )}
             {a.enabled && a.status === "error" && (
