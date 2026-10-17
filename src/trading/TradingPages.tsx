@@ -127,6 +127,20 @@ export function TradingPages({
           {writable ? "Owner access" : "Owner sign in"}
         </button>
       </div>
+      {data?.worker?.lastError && !error && (
+        <div className="trading-alert" role="status">
+          Worker scan error: {data.worker.lastError}. The next scan retries
+          automatically.
+        </div>
+      )}
+      {data?.worker?.lastTickCompletedAt &&
+        data.serverTime - data.worker.lastTickCompletedAt > 60000 &&
+        !error && (
+          <div className="trading-alert" role="status">
+            The trading API is connected, but the worker has not completed a
+            market scan in over a minute.
+          </div>
+        )}
       {data?.storageError && (
         <div className="trading-alert" role="alert">
           Trading is stopped because storage could not be confirmed. The account
@@ -1001,17 +1015,36 @@ function AIActivity({
   disabled: boolean;
   onControl: (action: string) => Promise<boolean>;
 }) {
+  const progress = a.evaluation;
+  const phaseLabels: Record<string, string> = {
+    reading_data: "Reading fresh market data",
+    provider_queue: "Waiting for provider slot",
+    model_request: "Model request in progress",
+    validating: "Validating model response",
+    execution_check: "Checking decision against current account",
+  };
+  const elapsed = progress
+    ? Math.max(
+        0,
+        Math.floor(
+          ((data?.serverTime || Date.now()) - progress.startedAt) / 1000,
+        ),
+      )
+    : 0;
+  const latest = a.journal[0];
   const steps = ["Observe", "Evaluate", "Validate", "Record"],
     active =
-      a.status === "reading_data"
-        ? 0
-        : a.status === "evaluating"
-          ? 1
-          : ["risk_blocked", "risk_stopped"].includes(a.status)
-            ? 2
-            : a.status === "waiting"
-              ? 0
-              : -1,
+      progress && ["validating", "execution_check"].includes(progress.stage)
+        ? 2
+        : a.status === "reading_data"
+          ? 0
+          : a.status === "evaluating"
+            ? 1
+            : ["risk_blocked", "risk_stopped"].includes(a.status)
+              ? 2
+              : a.status === "waiting"
+                ? 0
+                : -1,
     provider = data?.providers.find((p) => p.id === a.provider),
     today = new Date().toISOString().slice(0, 10),
     usedCalls = a.callDay === today ? a.calls : 0;
@@ -1030,16 +1063,36 @@ function AIActivity({
             <BrainCircuit size={24} />
           </span>
           <div>
-            <h3>{STATUS[a.status] || a.status}</h3>
+            <h3>
+              {progress
+                ? phaseLabels[progress.stage] || progress.stage
+                : STATUS[a.status] || a.status}
+            </h3>
             <p>
               {a.status === "awaiting_model"
                 ? "Connect this provider to begin evaluations. Your capital and settings are saved."
                 : a.status === "paused"
                   ? "New decisions are paused. Existing orders remain monitored."
                   : a.status === "evaluating"
-                    ? "Waiting for provider capacity or evaluating a timestamped account and market snapshot."
+                    ? progress?.stage === "provider_queue"
+                      ? "Waiting for shared provider capacity. This run has not started its next model request yet."
+                      : "The provider is processing a timestamped market/account snapshot. Orders continue to be monitored."
                     : "Decisions use closed candles, account balances and executable market data."}
             </p>
+            {progress && (
+              <p className="ai-request-progress">
+                Evaluation elapsed: {elapsed}s · deadline{" "}
+                {time(progress.deadlineAt)}. Only completed, valid decisions can
+                submit orders.
+              </p>
+            )}
+            {a.enabled && a.status === "error" && (
+              <p className="negative">
+                {a.lastError || latest?.result} Automatic retry at{" "}
+                {time(a.nextEvaluation)} · {a.consecutiveErrors || 1}{" "}
+                consecutive failed checks.
+              </p>
+            )}
           </div>
         </div>
         <div className="ai-stage-track">
@@ -1052,19 +1105,30 @@ function AIActivity({
         </div>
         <div className="ai-timing">
           <span>
-            Last evaluation<b>{time(a.lastEvaluation)}</b>
+            Last evaluation started<b>{time(a.lastEvaluation)}</b>
           </span>
           <span>
             Next scheduled check
-            <b>{a.enabled ? time(a.nextEvaluation) : "Paused"}</b>
+            <b>
+              {!a.enabled
+                ? "Paused"
+                : progress
+                  ? "After the current evaluation"
+                  : time(a.nextEvaluation)}
+            </b>
+          </span>
+          <span>
+            Last model response<b>{time(a.lastDecisionAt)}</b>
           </span>
         </div>
         <div className="ai-last-decision">
           <span className="tiny-label">LATEST RECORDED EVENT</span>
           <p>
-            {a.journal[0]?.rationale ||
-              a.journal[0]?.result ||
-              "No decisions recorded yet."}
+            {latest?.status === "risk_blocked" || latest?.staleDecision
+              ? latest.result
+              : latest?.rationale ||
+                latest?.result ||
+                "No decisions recorded yet."}
           </p>
         </div>
       </section>
@@ -1112,6 +1176,20 @@ function AIActivity({
                   ? ` · ${data.rateLimits.nvidia.queued} queued`
                   : ""}
               </dd>
+            </div>
+          )}
+          {a.inferenceSettings && (
+            <div>
+              <dt>Output allowance / request</dt>
+              <dd>
+                {a.inferenceSettings.outputTokens.toLocaleString()} tokens
+              </dd>
+            </div>
+          )}
+          {a.inferenceSettings?.reasoningEffort && (
+            <div>
+              <dt>Reasoning effort</dt>
+              <dd>{a.inferenceSettings.reasoningEffort}</dd>
             </div>
           )}
           <div>

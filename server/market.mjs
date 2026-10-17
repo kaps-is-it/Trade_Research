@@ -92,11 +92,11 @@ export class TradingMarket {
         );
       if (!valid(data.bids) || !valid(data.asks))
         throw new Error("Invalid market depth response.");
-      // Include a monotonic receipt ID so two fast responses never share a budget.
+      // Receipt time is real wall time; exchange updateId controls liquidity reuse.
       const book = {
         bids: data.bids,
         asks: data.asks,
-        received: Math.max(Date.now(), (this.books[base]?.received || 0) + 1),
+        received: Date.now(),
         step: this.rules[base].step,
         updateId: data.lastUpdateId,
       };
@@ -142,7 +142,12 @@ export class TradingMarket {
   prices() {
     return Object.fromEntries(
       Object.entries(this.books)
-        .filter(([, b]) => Date.now() - b.received < 10000)
+        .filter(
+          ([base, b]) =>
+            !this.errors[base] &&
+            b.received <= Date.now() &&
+            Date.now() - b.received <= 5000,
+        )
         .map(([s, b]) => [
           s,
           D(b.bids[0][0]).plus(b.asks[0][0]).div(2).toFixed(),

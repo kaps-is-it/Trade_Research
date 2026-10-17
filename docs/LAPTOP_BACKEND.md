@@ -10,6 +10,10 @@ Up to six evaluations can be in flight, with one at a time per account. Due runs
 
 The gate persists recent starts in ignored `data/provider-rate-history.json`, so restarting does not reset the rolling budget. HTTP 429 activates a shared cooldown and honors a longer Retry-After. Other model failures back off per run. Existing daily-cap fields are ignored and removed on load. Today's evaluation count remains an informational counter with no daily stop.
 
+The activity panel distinguishes reading data, waiting for a provider slot, an active model request, response validation and account validation. It shows elapsed evaluation time, the deadline and the last completed model response. A failed request leaves the run enabled and schedules another attempt after 15, 30, 60 or at most 120 seconds; the panel shows that retry time and failure count. The API also reports worker scan times and scan errors so a connected HTTP server is not mistaken for a healthy trading loop. A successful decision clears the error count. Paused and risk-stopped runs still require an owner action to resume.
+
+Historical candles are retrieved before the executable quote, so slow history retrieval cannot consume the quote's freshness window before inference starts. Marked prices exclude failed, future-dated or more than five-second-old books. Orders still undergo a fresh execution check after inference; a model response does not bypass order limits or stale-account protection.
+
 ## Start and stop
 
 On this Windows machine, setup is:

@@ -21,6 +21,7 @@ import {
   MODEL_PRESETS,
   modelTimeoutMs,
   modelOutputTokens,
+  modelReasoningOptions,
   providerReady,
   modelConnection,
   requestDecision,
@@ -28,6 +29,11 @@ import {
 
 export class TradingService {
   busy = new Map();
+  progress = new Map();
+  startedAt = Date.now();
+  lastTickStartedAt = null;
+  lastTickCompletedAt = null;
+  lastTickError = null;
   watched = new Map();
   running = false;
   closed = false;
@@ -147,6 +153,13 @@ export class TradingService {
       storage: this.store.kind || "sqlite",
       storageError: this.store.failed?.message || null,
       cadenceSeconds: 1,
+      worker: {
+        startedAt: this.startedAt,
+        lastTickStartedAt: this.lastTickStartedAt,
+        lastTickCompletedAt: this.lastTickCompletedAt,
+        lastError: this.lastTickError,
+        inFlight: this.busy.size,
+      },
       evaluationMode: "continuous",
       rateLimits: { nvidia: this.limiter.snapshot("nvidia") },
       symbols: SYMBOLS,
@@ -186,6 +199,14 @@ export class TradingService {
           ...balances(a),
           equity: equity(a, prices),
           positions: positionMetrics(a, this.market.books, this.market.errors),
+          evaluation: this.progress.get(a.id) || null,
+          inferenceSettings: {
+            outputTokens: modelOutputTokens(a.provider, this.env),
+            timeoutMs: modelTimeoutMs(a.provider, this.env),
+            reasoningEffort:
+              modelReasoningOptions(a.provider, a.model, this.env)
+                .reasoning_effort || null,
+          },
         };
       }),
     };
@@ -244,6 +265,7 @@ export class TradingService {
   async tick() {
     if (this.running || this.closed) return;
     this.running = true;
+    this.lastTickStartedAt = Date.now();
     try {
       await this.ready;
       this.store.assertHealthy?.();
@@ -325,9 +347,12 @@ export class TradingService {
           void this.evaluate(account.id).catch((error) => {
             this.lastError = error.message;
           });
+      this.lastTickError = null;
     } catch (error) {
       this.lastError = error.message;
+      this.lastTickError = error.message;
     } finally {
+      this.lastTickCompletedAt = Date.now();
       this.running = false;
     }
   }
@@ -335,6 +360,19 @@ export class TradingService {
     if (this.closed || this.busy.has(id)) return;
     const controller = new AbortController();
     this.busy.set(id, controller);
+    const startedAt = Date.now();
+    const deadlineAt =
+      startedAt + modelTimeoutMs(this.accounts.get(id)?.provider, this.env);
+    const onStage = (stage) => {
+      if (!controller.signal.aborted && !this.closed)
+        this.progress.set(id, {
+          stage,
+          startedAt,
+          stageStartedAt: Date.now(),
+          deadlineAt,
+        });
+    };
+    onStage("reading_data");
     const timeout = setTimeout(
       () => controller.abort(),
       modelTimeoutMs(this.accounts.get(id)?.provider, this.env),
@@ -361,8 +399,9 @@ export class TradingService {
         a.nextEvaluation = Date.now();
         a.status = "reading_data";
       });
-      const book = await this.market.refresh(account.base),
-        candles = await this.market.history(account.base);
+      // History may take seconds; get the executable quote after it completes.
+      const candles = await this.market.history(account.base),
+        book = await this.market.refresh(account.base);
       checkBook(book, Date.now());
       account = this.accounts.get(id);
       if (!account.enabled || controller.signal.aborted) return;
@@ -412,11 +451,14 @@ export class TradingService {
       if (!evaluatedAccount || controller.signal.aborted) return;
       const evaluatedState = accountOrderState(evaluatedAccount);
       this.store.assertHealthy?.();
+      onStage("provider_queue");
       const result = await this.decide(evaluatedAccount, snapshot, {
         env: this.env,
         signal: controller.signal,
         limiter: this.limiter,
+        onStage,
       });
+      onStage("execution_check");
       if (
         this.closed ||
         controller.signal.aborted ||
@@ -538,6 +580,9 @@ export class TradingService {
           }
         a.status = status;
         a.consecutiveErrors = 0;
+        a.lastError = null;
+        a.lastDecisionAt = Date.now();
+        a.lastDecisionAction = changed ? "discarded" : d.action;
         this.record(a, {
           id: decisionId,
           strategy: changed ? undefined : structuredClone(a.strategy),
@@ -573,6 +618,7 @@ export class TradingService {
           if (!a.enabled || this.closed) return;
           a.status = "error";
           a.consecutiveErrors = (a.consecutiveErrors || 0) + 1;
+          a.lastError = error.message;
           this.record(a, { result: error.message });
         });
       else if (!this.closed && this.accounts.get(id)?.enabled)
@@ -580,6 +626,8 @@ export class TradingService {
           if (!a.enabled || this.closed) return;
           a.status = "error";
           a.consecutiveErrors = (a.consecutiveErrors || 0) + 1;
+          a.lastError =
+            "Evaluation timed out. The run will retry automatically.";
           this.record(a, {
             result: "Evaluation timed out. No model order was executed.",
           });
@@ -606,6 +654,7 @@ export class TradingService {
           });
       } finally {
         this.busy.delete(id);
+        this.progress.delete(id);
       }
     }
   }

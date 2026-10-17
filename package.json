@@ -16,6 +16,7 @@
     "test": "vitest run src && node --test server/*.test.mjs",
     "smoke:feeds": "node scripts/smoke-feeds.mjs",
     "smoke:nvidia": "node --env-file-if-exists=.env scripts/smoke-nvidia.mjs",
+    "smoke:rig": "node --env-file-if-exists=.env scripts/smoke-rig.mjs",
     "smoke:supabase": "node --env-file-if-exists=.env scripts/smoke-supabase.mjs",
     "format": "prettier --write src scripts vite.config.ts"
   },

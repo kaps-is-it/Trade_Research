@@ -10,6 +10,7 @@ import {
   MODEL_PRESETS,
   modelTimeoutMs,
   modelOutputTokens,
+  modelReasoningOptions,
 } from "./models.mjs";
 
 const account = () =>
@@ -47,6 +48,53 @@ test("model contract omits simulation labels, names and account UI metadata", ()
   assert.equal(input.market, "BTC/USDT");
   assert(!("name" in input.account));
   assert(!("kind" in input.account));
+});
+
+test("GLM uses explicit high reasoning without reducing output allowance or changing other models", async () => {
+  const a = { ...account(), provider: "nvidia", model: "z-ai/glm-5.3" };
+  const stages = [];
+  await requestDecision(a, snapshot, {
+    env: { NVIDIA_NIM_API_KEY: "test-only" },
+    onStage: (stage) => stages.push(stage),
+    fetcher: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      assert.equal(body.reasoning_effort, "high");
+      assert.equal(body.max_tokens, 32768);
+      assert.equal(body.chat_template_kwargs.clear_thinking, true);
+      return Response.json({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                action: "hold",
+                rationale: "Wait",
+                strategy,
+              }),
+            },
+          },
+        ],
+      });
+    },
+  });
+  assert.deepEqual(stages, ["provider_queue", "model_request", "validating"]);
+  assert.equal(
+    modelReasoningOptions("nvidia", a.model, {
+      NVIDIA_GLM_REASONING_EFFORT: "max",
+    }).reasoning_effort,
+    "max",
+  );
+  assert.deepEqual(
+    modelReasoningOptions("nvidia", "deepseek-ai/deepseek-v4.1-flash"),
+    {},
+  );
+  assert.deepEqual(modelReasoningOptions("openai", a.model), {});
+  assert.throws(
+    () =>
+      modelReasoningOptions("nvidia", a.model, {
+        NVIDIA_GLM_REASONING_EFFORT: "invalid",
+      }),
+    /must be/,
+  );
 });
 test("malformed and incomplete model outputs never become orders", () => {
   assert.throws(() => parseDecision("not JSON"));

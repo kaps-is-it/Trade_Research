@@ -47,6 +47,16 @@ export function modelOutputTokens(provider, env = process.env) {
     );
   return configured;
 }
+export function modelReasoningOptions(provider, model, env = process.env) {
+  if (provider !== "nvidia" || model !== "z-ai/glm-5.3") return {};
+  const effort = env.NVIDIA_GLM_REASONING_EFFORT || "high";
+  if (!["low", "high", "max"].includes(effort))
+    throw new Error("NVIDIA_GLM_REASONING_EFFORT must be low, high or max.");
+  return {
+    reasoning_effort: effort,
+    chat_template_kwargs: { clear_thinking: true },
+  };
+}
 export function modelConnection(provider, env = process.env) {
   const config = PROVIDERS[provider];
   if (!config) throw new Error("Unknown model provider.");
@@ -189,7 +199,13 @@ export function parseDecision(text) {
 export async function requestDecision(
   account,
   snapshot,
-  { env = process.env, fetcher = fetch, signal, limiter } = {},
+  {
+    env = process.env,
+    fetcher = fetch,
+    signal,
+    limiter,
+    onStage = () => {},
+  } = {},
 ) {
   if (!providerReady(account.provider, env))
     throw new Error("Model connection is not configured.");
@@ -216,22 +232,27 @@ export async function requestDecision(
         ...(account.provider === "nvidia"
           ? { temperature: 0.5, top_p: 1 }
           : {}),
+        ...modelReasoningOptions(account.provider, account.model, env),
       };
-  const send = () =>
-    fetcher(`${base}/${isOpenAI ? "responses" : "chat/completions"}`, {
+  const send = () => {
+    onStage("model_request");
+    return fetcher(`${base}/${isOpenAI ? "responses" : "chat/completions"}`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
       signal,
     });
+  };
+  onStage("provider_queue");
   const response = limiter
     ? await limiter.request(account.provider, send, signal)
     : await send();
   if (!response.ok)
     throw new Error(
-      `Model provider returned HTTP ${response.status}. Check the model ID, account access and quota.`,
+      `Model provider returned HTTP ${response.status}. ${response.status === 429 ? "Provider rate limit reached; shared cooldown and automatic retry will apply." : response.status >= 500 ? "Provider service is unavailable; the run will retry automatically." : "Check the model ID, account access and quota."}`,
     );
   const data = await response.json();
+  onStage("validating");
   if (!isOpenAI && data.choices?.[0]?.finish_reason === "length")
     throw new Error(
       `Model reached the requested ${maxTokens.toLocaleString("en-US")}-token output allowance before completing the decision. No order was submitted.`,

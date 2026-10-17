@@ -542,3 +542,85 @@ test("a fill during model inference invalidates the outdated action and strategy
     f.store.close();
   }
 });
+
+test("history is loaded before the fresh executable quote and progress clears after a response", async () => {
+  let release, entered;
+  const order = [];
+  const started = new Promise((r) => (entered = r));
+  const f = fixture(async (_a, _s, options) => {
+    options.onStage("model_request");
+    entered();
+    return new Promise((r) => (release = r));
+  });
+  const refresh = f.market.refresh.bind(f.market);
+  f.market.history = async () => {
+    order.push("history");
+    return [{ time: 1, close: "100" }];
+  };
+  f.market.refresh = async (base) => {
+    order.push("book");
+    return refresh(base);
+  };
+  try {
+    const a = await f.create("1000");
+    const evaluating = f.service.evaluate(a.id);
+    await started;
+    assert.deepEqual(order, ["history", "book"]);
+    const progress = f.service.snapshot().accounts[0].evaluation;
+    assert.equal(progress.stage, "model_request");
+    assert(progress.deadlineAt > progress.startedAt);
+    release({
+      decision: { action: "hold", rationale: "No change", strategy },
+      inputTokens: 1,
+      outputTokens: 1,
+    });
+    await evaluating;
+    const saved = f.service.snapshot().accounts[0];
+    assert.equal(saved.evaluation, null);
+    assert(saved.lastDecisionAt);
+    assert.equal(saved.lastError, null);
+    assert(saved.enabled);
+  } finally {
+    await f.service.stop();
+    f.store.close();
+  }
+});
+
+test("failed model evaluations retry automatically when due and continue after recovery", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1000000 });
+  let calls = 0;
+  const f = fixture(async () => {
+    if (++calls === 1) throw new Error("Provider HTTP 503");
+    return {
+      decision: { action: "hold", rationale: "Recovered", strategy },
+      inputTokens: 1,
+      outputTokens: 1,
+    };
+  });
+  try {
+    const a = await f.create("1000");
+    await f.service.evaluate(a.id);
+    const failed = f.service.accounts.get(a.id);
+    assert.equal(failed.enabled, true);
+    assert.equal(failed.status, "error");
+    assert.equal(failed.nextEvaluation, 1015000);
+    assert.match(failed.lastError, /503/);
+    await f.service.tick();
+    assert.equal(calls, 1, "respect retry delay");
+    t.mock.timers.setTime(1015001);
+    await f.service.tick();
+    for (let i = 0; i < 100 && f.service.busy.size; i++)
+      await new Promise((r) => setImmediate(r));
+    assert.equal(calls, 2);
+    const recovered = f.service.accounts.get(a.id);
+    assert.equal(recovered.status, "waiting");
+    assert.equal(recovered.consecutiveErrors, 0);
+    assert.equal(recovered.lastError, null);
+    assert.equal(recovered.enabled, true);
+    assert(recovered.nextEvaluation > Date.now());
+  } finally {
+    await f.service.stop();
+    f.store.close();
+    t.mock.timers.reset();
+  }
+});

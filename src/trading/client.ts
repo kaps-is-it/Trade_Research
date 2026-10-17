@@ -96,6 +96,21 @@ export interface JournalEntry {
   outputTokens?: number;
 }
 export interface TradingAccount {
+  evaluation?: {
+    stage: string;
+    startedAt: number;
+    stageStartedAt: number;
+    deadlineAt: number;
+  } | null;
+  inferenceSettings?: {
+    outputTokens: number;
+    timeoutMs: number;
+    reasoningEffort: string | null;
+  };
+  lastDecisionAt?: number;
+  lastDecisionAction?: string;
+  lastError?: string | null;
+  consecutiveErrors?: number;
   strategy?: Strategy;
   positions?: Position[];
   totalFees: string;
@@ -131,6 +146,13 @@ export interface TradingAccount {
   outputTokens: number;
 }
 export interface TradingSnapshot {
+  worker?: {
+    startedAt: number;
+    lastTickStartedAt: number | null;
+    lastTickCompletedAt: number | null;
+    lastError: string | null;
+    inFlight: number;
+  };
   canWrite: boolean;
   serverTime: number;
   storage: string;
