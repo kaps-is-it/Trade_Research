@@ -4,7 +4,7 @@ The laptop runs the Node market loop, paper execution, model scheduling and HTTP
 
 ## Continuous AI
 
-There is no daily request allowance. Each enabled run evaluates fresh market/account snapshots, then becomes eligible again one second after its response finishes. The worker checks eligibility every two seconds. It may reuse the last 100 closed five-minute candles while live prices, balances and orders change. No unfinished candle is presented as closed history. A hold decision is valid; an evaluation need not produce a trade.
+There is no daily request allowance. Each enabled run evaluates fresh market/account snapshots, then becomes eligible again one second after its response finishes. The worker checks eligibility about every second. It may reuse the last 100 closed five-minute candles while live prices, balances and orders change. No unfinished candle is presented as closed history. A hold decision is valid; an evaluation need not produce a trade.
 
 Up to six evaluations can be in flight, with one at a time per account. Due runs take turns. Each provider connection has a shared maximum of 30 request starts in a rolling minute; NVIDIA's three model presets and catalog calls use the same NVIDIA gate. Starts are spaced by at least 2.05 seconds. This is a ceiling, not a target: latency, outages, waiting runs, cancellations and risk stops can reduce throughput. Requests made outside this worker with the same key are outside its counter.
 
