@@ -965,3 +965,18 @@
     max-height: 380px;
   }
 }
+
+.order-review-cell {
+  max-width: 100%;
+  white-space: normal;
+}
+.order-review-cell summary {
+  cursor: pointer;
+  font-size: 11px;
+}
+.order-review-cell p {
+  margin: 8px 0;
+  font-size: 11px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}

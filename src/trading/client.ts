@@ -47,6 +47,22 @@ export interface PaperOrder {
   fee: string;
   reason?: string;
   execution?: string;
+  reservePrice?: string;
+  timeInForce?: "GTC" | "IOC";
+  replacesOrderId?: string;
+  replacedByOrderId?: string;
+  intent?: {
+    strategyRevision: number;
+    rationale: string;
+    condition: string;
+    invalidation: string;
+  };
+  lastReview?: {
+    time: number;
+    decisionId: string;
+    strategyRevision: number;
+    rationale: string;
+  };
   closed?: number;
 }
 export interface PaperFill {
@@ -61,6 +77,8 @@ export interface PaperFill {
 }
 export interface JournalEntry {
   strategy?: Strategy;
+  staleDecision?: boolean;
+  orderId?: string;
   id: string;
   time: number;
   action?: string;

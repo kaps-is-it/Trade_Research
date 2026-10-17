@@ -218,6 +218,9 @@ export function submitOrder(account, input, book, rules, now = Date.now()) {
     status: "open",
     created: now,
     eligibleAt: now + 500,
+    step: lot,
+    timeInForce: input.type === "limit" ? "GTC" : "IOC",
+    execution: "observed_depth",
     filled: "0",
     total: "0",
     fee: "0",
@@ -240,7 +243,13 @@ export function cancelOrder(account, id, now = Date.now()) {
 export function processOrders(account, base, book, now = Date.now()) {
   const candidates = [...account.orders]
     .reverse()
-    .filter((o) => open(o) && o.base === base && o.eligibleAt <= now);
+    .filter(
+      (o) =>
+        open(o) &&
+        o.base === base &&
+        o.eligibleAt <= now &&
+        book?.received >= o.eligibleAt,
+    );
   if (!candidates.length) return false;
   checkBook(book, now);
   // One book budget per account and snapshot. Experiments have independent liquidity.
@@ -293,7 +302,7 @@ export function processOrders(account, base, book, now = Date.now()) {
         );
       if (!amount.gt(0)) continue;
       // Never manufacture sub-step residual fills from affordability rounding.
-      const step = book.step || "0.00000001";
+      const step = order.step || book.step || "0.00000001";
       amount = amount.div(step).floor().mul(step);
       if (!amount.gt(0)) continue;
       const total = amount.mul(price),
@@ -379,38 +388,61 @@ export function processOrders(account, base, book, now = Date.now()) {
   return changed;
 }
 
-// AI decisions execute in the same persisted update. This deliberately models
-// a full quote fill, without depth/queue/market-impact simulation. Manual orders
-// retain the depth-based engine above.
-export function executeAIOrder(account, input, book, rules, now = Date.now()) {
+// AI and manual accounts share the same latency, reservations and depth engine.
+export function submitAIOrder(account, input, book, rules, now = Date.now()) {
   if (account.kind !== "ai")
-    throw new Error("Immediate execution requires an AI account.");
-  if (input.type !== "market")
-    throw new Error(
-      "AI trades execute immediately; use hold to wait for an entry condition.",
-    );
+    throw new Error("An AI order requires an AI account.");
+  return submitOrder(account, input, book, rules, now);
+}
+export function replaceAIOrder(
+  account,
+  orderId,
+  input,
+  book,
+  rules,
+  now = Date.now(),
+) {
+  if (account.kind !== "ai")
+    throw new Error("Order replacement requires an AI account.");
   const working = structuredClone(account);
-  const order = submitOrder(working, input, book, rules, now);
-  order.eligibleAt = now;
-  order.execution = "immediate_quote";
-  const quoteBook = {
-    ...book,
-    updateId: order.id,
-    step:
-      rules.marketStep && D(rules.marketStep).gt(0)
-        ? rules.marketStep
-        : rules.step,
-    asks: [[book.asks[0][0], order.quantity]],
-    bids: [[book.bids[0][0], order.quantity]],
-  };
-  const allOrders = working.orders;
-  working.orders = [order];
-  processOrders(working, input.base, quoteBook, now);
-  working.orders = allOrders;
-  if (order.status !== "filled")
-    throw new Error("Immediate order could not be fully executed.");
+  const original = working.orders.find((o) => o.id === orderId && open(o));
+  if (!original)
+    throw new Error(
+      "The order to replace is no longer open. Reassess the latest position.",
+    );
+  // A replacement keeps the original market/side and creates a new order for
+  // the desired REMAINING quantity. A failed validation leaves the old order live.
+  cancelOrder(working, orderId, now);
+  const order = submitAIOrder(
+    working,
+    { ...input, base: original.base, side: original.side },
+    book,
+    rules,
+    now,
+  );
+  original.replacedByOrderId = order.id;
+  original.reason = `Replaced by order ${order.id}.`;
+  order.replacesOrderId = original.id;
   Object.assign(account, working);
   return order;
+}
+export function accountOrderState(account) {
+  // Exclude prices, strategy, counters and UI state: only economic changes can
+  // invalidate an in-flight decision (fills, cancellations, new orders, funds).
+  return JSON.stringify({
+    cash: account.cash,
+    holdings: account.holdings,
+    orders: account.orders
+      .filter(open)
+      .map((o) => ({
+        id: o.id,
+        status: o.status,
+        filled: o.filled,
+        remaining: o.remaining,
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+    fillCount: account.fillCount,
+  });
 }
 export function positionMetrics(account, books, errors = {}, now = Date.now()) {
   return Object.entries(account.holdings)

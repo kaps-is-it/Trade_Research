@@ -189,8 +189,9 @@ export function StrategyPanel({ account }: { account: TradingAccount }) {
           <small className="strategy-disclaimer">
             These scores describe the AI's latest assessment, not probabilities
             or live price triggers. The AI revisits this plan on its next
-            evaluation and submits trades itself. No automatic take-profit or
-            position stop-loss.{" "}
+            evaluation and submits market or limit orders itself. Submitted
+            limits continue to be monitored by the engine between evaluations.
+            No automatic take-profit or position stop-loss.{" "}
             {account.enabled
               ? "Evaluation enabled."
               : "Run paused; this plan is saved."}{" "}

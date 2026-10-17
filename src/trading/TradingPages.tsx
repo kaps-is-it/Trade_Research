@@ -1,5 +1,5 @@
 import { PositionDashboard, StrategyPanel } from "./PositionDashboard";
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import {
   Activity,
   ArrowDownLeft,
@@ -388,16 +388,17 @@ export function TradingPages({
         </summary>
         <p>
           All orders stay inside this paper engine. Example fee: 0.10% per fill.
-          AI buys and sells fill immediately in full at a fresh Binance ask or
-          bid, with no simulated depth or market impact. To wait, the AI holds
-          and revisits its saved conditions. Manual orders wait at least 500 ms
-          and use the next available top-20 order book, polled about every
-          second. Manual market orders consume displayed depth; unfilled
-          remainders are cancelled. Limits fill only against executable
-          opposite-side depth, with no queue-position claim. Fresh market data
-          and exchange size/price rules are required. No market impact is
-          modeled. Each simulation has an independent liquidity budget. USDT is
-          the account currency; no USD conversion is implied.
+          AI and manual accounts can use market orders or GTC limit orders.
+          Orders wait at least 500 ms and use a later observed top-20 Binance
+          order book, polled about every second. Market orders consume available
+          depth; unfilled remainders are cancelled. Limits wait for executable
+          prices at their limit or better and may fill partially. A last-trade
+          price touching the limit does not guarantee a fill. HOLD means no
+          change, keeping existing positions and orders. The AI can cancel or
+          replace a pending order during a later review. Fresh market data and
+          exchange size/price rules are required. Queue position and market
+          impact are not modeled. Each account has an independent liquidity
+          budget. USDT is the account currency; no USD conversion is implied.
         </p>
         <p>
           Pausing a run stops new AI decisions. Open orders continue to be
@@ -1229,66 +1230,111 @@ function AccountRecords({
               </thead>
               <tbody>
                 {orders.map((o) => (
-                  <tr key={o.id}>
-                    <td>
-                      <b>{o.base}/USDT</b>
-                      <small>{time(o.created)}</small>
-                    </td>
-                    <td>
-                      <span
-                        className={o.side === "buy" ? "positive" : "negative"}
-                      >
-                        {o.side.toUpperCase()}
-                      </span>
-                      <small>{o.type}</small>
-                    </td>
-                    <td className="mono">
-                      {quantityText(o.quantity)}
-                      <small>{quantityText(o.filled)} filled</small>
-                    </td>
-                    <td className="mono">
-                      {o.limit
-                        ? money(o.limit, 4)
-                        : o.execution === "immediate_quote"
-                          ? "Immediate market"
-                          : "Market"}
-                      <small>
-                        {Number(o.filled) > 0
-                          ? `Average fill ${money(new Decimal(o.total).div(o.filled).toFixed(), 4)}`
-                          : "Not purchased / sold yet"}
-                      </small>
-                    </td>
-                    <td className="mono">
-                      {money(o.total)}
-                      <small>Fee {money(o.fee, 4)}</small>
-                      {openOrder(o.status) && o.limit && (
-                        <small>
-                          Pending value{" "}
-                          {money(
-                            new Decimal(o.remaining).mul(o.limit).toFixed(),
-                          )}
-                        </small>
-                      )}
-                    </td>
-                    <td>
-                      {o.status}
-                      <small>
-                        {o.closed ? `Closed ${time(o.closed)}` : ""}
-                      </small>
-                      <small>{o.reason}</small>
-                    </td>
-                    <td>
-                      {openOrder(o.status) && (
-                        <button
-                          className="text-link"
-                          disabled={disabled}
-                          onClick={() => void onCancel(o.id)}
+                  <Fragment key={o.id}>
+                    <tr>
+                      <td>
+                        <b>{o.base}/USDT</b>
+                        <small>{time(o.created)}</small>
+                      </td>
+                      <td>
+                        <span
+                          className={o.side === "buy" ? "positive" : "negative"}
                         >
-                          Cancel
-                        </button>
-                      )}
-                    </td>
-                  </tr>
+                          {o.side.toUpperCase()}
+                        </span>
+                        <small>
+                          {o.type} ·{" "}
+                          {o.timeInForce ||
+                            (o.type === "limit" ? "GTC" : "IOC")}
+                        </small>
+                      </td>
+                      <td className="mono">
+                        {quantityText(o.quantity)}
+                        <small>
+                          {quantityText(o.filled)} filled ·{" "}
+                          {quantityText(o.remaining)} remaining
+                        </small>
+                      </td>
+                      <td className="mono">
+                        {o.limit
+                          ? money(o.limit, 4)
+                          : o.execution === "immediate_quote"
+                            ? "Immediate market"
+                            : "Market"}
+                        <small>
+                          {Number(o.filled) > 0
+                            ? `Average fill ${money(new Decimal(o.total).div(o.filled).toFixed(), 4)}`
+                            : "Not purchased / sold yet"}
+                        </small>
+                      </td>
+                      <td className="mono">
+                        {money(o.total)}
+                        <small>Fee {money(o.fee, 4)}</small>
+                        {openOrder(o.status) && o.limit && (
+                          <small>
+                            Pending value{" "}
+                            {money(
+                              new Decimal(o.remaining).mul(o.limit).toFixed(),
+                            )}
+                          </small>
+                        )}
+                      </td>
+                      <td>
+                        {o.status}
+                        <small>
+                          {o.closed ? `Closed ${time(o.closed)}` : ""}
+                        </small>
+                        <small>{o.reason}</small>
+                        {openOrder(o.status) && (
+                          <small>
+                            {o.type === "limit"
+                              ? "Waiting for eligible liquidity"
+                              : "Awaiting next eligible book"}
+                          </small>
+                        )}
+                        {o.replacesOrderId && (
+                          <small>
+                            Replaces {o.replacesOrderId.slice(0, 8)}
+                          </small>
+                        )}
+                      </td>
+                      <td>
+                        {openOrder(o.status) && (
+                          <button
+                            className="text-link"
+                            disabled={disabled}
+                            onClick={() => void onCancel(o.id)}
+                          >
+                            Cancel
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {a.kind === "ai" && (
+                      <tr>
+                        <td colSpan={7} className="order-review-cell">
+                          <details>
+                            <summary>Intent & latest review</summary>
+                            <p>
+                              {o.intent?.condition ||
+                                "No recorded entry/exit intent for this legacy order."}
+                            </p>
+                            {o.intent && (
+                              <p>Invalidation: {o.intent.invalidation}</p>
+                            )}
+                            <p>
+                              {o.lastReview?.rationale || "Awaiting AI review"}
+                            </p>
+                            <small>
+                              {o.lastReview
+                                ? `Reviewed ${time(o.lastReview.time)} · strategy ${o.lastReview.strategyRevision}`
+                                : ""}
+                            </small>
+                          </details>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -1398,7 +1444,11 @@ function DecisionJournal({ account }: { account: TradingAccount }) {
               <span
                 className={`decision-action ${j.status === "risk_blocked" ? "negative" : ""}`}
               >
-                {j.action?.toUpperCase() || "EVENT"}
+                {j.staleDecision
+                  ? "DISCARDED"
+                  : j.action === "hold"
+                    ? "NO CHANGE"
+                    : j.action?.toUpperCase() || "EVENT"}
               </span>
               <span>{j.rationale || j.result}</span>
               <time>{time(j.time)}</time>

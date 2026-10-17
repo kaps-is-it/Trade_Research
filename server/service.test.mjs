@@ -3,7 +3,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { AccountStore } from "./store.mjs";
 import { TradingService } from "./service.mjs";
-import { submitOrder } from "./ledger.mjs";
+import { submitOrder, processOrders } from "./ledger.mjs";
+import { decisionInput } from "./models.mjs";
 
 const rules = {
   step: "0.001",
@@ -280,7 +281,7 @@ test("continuous scheduler bounds concurrency and gives waiting runs their turn"
   }
 });
 
-test("strategy revisions, immediate fills and durable memory survive a worker restart", async () => {
+test("strategy revisions, depth fills and durable memory survive a worker restart", async () => {
   const seen = [];
   const f = fixture(async (a) => {
     seen.push(a.strategy?.memory);
@@ -301,8 +302,24 @@ test("strategy revisions, immediate fills and durable memory survive a worker re
     const a = await f.create("1000");
     await f.service.evaluate(a.id);
     let saved = f.service.accounts.get(a.id);
+    assert.equal(saved.orders[0].status, "open");
+    assert.equal(saved.fills.length, 0);
+    const eligible = saved.orders[0].eligibleAt;
+    await f.service.update(a.id, (r) =>
+      processOrders(
+        r,
+        "BTC",
+        {
+          received: eligible,
+          bids: [["99", "10"]],
+          asks: [["100", "10"]],
+          step: ".001",
+        },
+        eligible,
+      ),
+    );
+    saved = f.service.accounts.get(a.id);
     assert.equal(saved.orders[0].status, "filled");
-    assert.equal(saved.fills.length, 1, "no separate fill tick required");
     assert.equal(saved.strategy.revision, 1);
     assert.equal(saved.journal[0].strategy.memory, "Lesson 1");
     await f.service.update(a.id, (r) => {
@@ -330,7 +347,7 @@ test("strategy revisions, immediate fills and durable memory survive a worker re
   }
 });
 
-test("upgrade cancels legacy waiting AI orders once, preserves cash and pause, and never invents fills", async () => {
+test("upgrade preserves resting AI limits, reservations and pause without inventing fills", async () => {
   const f = fixture(async () => {});
   let restored;
   try {
@@ -350,15 +367,177 @@ test("upgrade cancels legacy waiting AI orders once, preserves cash and pause, a
     restored = new TradingService(f.store, f.market, {});
     await restored.ready;
     const r = restored.accounts.get(a.id);
-    assert.equal(r.orders[0].status, "cancelled");
-    assert.match(r.journal[0].result, /legacy waiting/);
+    assert.equal(r.orders[0].status, "open");
+    assert.match(r.journal[0].result, /resting limits are preserved/);
+    assert.equal(r.executionVersion, 3);
     assert.equal(r.cash, "1000");
     assert.equal(r.fills.length, 0);
     assert.equal(r.enabled, false);
     assert.equal(r.status, "paused");
-    assert.equal(restored.snapshot().accounts[0].available, "1000");
+    assert.equal(restored.snapshot().accounts[0].available, "909.91");
   } finally {
     await restored?.stop();
+    await f.service.stop();
+    f.store.close();
+  }
+});
+
+test("AI reviews persisted pending intent, keeps it on HOLD, replaces it atomically and cancels", async () => {
+  const inputs = [];
+  let action = { action: "buy", type: "limit", price: "90", quantity: "1" };
+  const f = fixture(async (a, s) => {
+    inputs.push(decisionInput(a, s));
+    return {
+      decision: {
+        ...action,
+        strategy,
+        rationale: "Review support and retain only a justified entry",
+      },
+      inputTokens: 1,
+      outputTokens: 1,
+    };
+  });
+  try {
+    const a = await f.create("1000");
+    await f.service.evaluate(a.id);
+    const id = f.service.accounts.get(a.id).orders[0].id;
+    action = { action: "hold" };
+    await f.service.evaluate(a.id);
+    let saved = f.service.accounts.get(a.id);
+    assert.equal(saved.orders.length, 1);
+    assert.equal(saved.orders[0].status, "open");
+    assert.equal(saved.orders[0].lastReview.strategyRevision, 2);
+    assert.equal(
+      inputs[1].account.openOrders[0].intent.condition,
+      strategy.entryConditions,
+    );
+    assert.equal(inputs[1].account.openOrders[0].reservedUSDT, "90.09");
+    assert.equal(inputs[1].previousStrategy.revision, 1);
+    assert.equal(f.store.all()[0].orders[0].lastReview.strategyRevision, 2);
+    action = {
+      action: "replace",
+      orderId: id,
+      type: "limit",
+      price: "91",
+      quantity: "1.2",
+    };
+    await f.service.evaluate(a.id);
+    saved = f.service.accounts.get(a.id);
+    const next = saved.orders.find((o) => o.status === "open");
+    assert.equal(next.replacesOrderId, id);
+    assert.equal(next.quantity, "1.2");
+    assert.equal(saved.orders.find((o) => o.id === id).status, "cancelled");
+    action = { action: "cancel", orderId: next.id };
+    await f.service.evaluate(a.id);
+    assert.equal(f.service.snapshot().accounts[0].reserved, "0");
+    assert.equal(
+      f.service.accounts.get(a.id).orders.filter((o) => o.status === "open")
+        .length,
+      0,
+    );
+  } finally {
+    await f.service.stop();
+    f.store.close();
+  }
+});
+
+test("resting AI limit fills without another model call, including while new decisions are paused", async () => {
+  let calls = 0;
+  const f = fixture(async () => {
+    calls++;
+    throw new Error("No evaluation expected");
+  });
+  try {
+    const a = await f.create("1000");
+    const submitted = Date.now() - 1000;
+    await f.service.update(a.id, (r) =>
+      submitOrder(
+        r,
+        { base: "BTC", side: "buy", type: "limit", quantity: "1", price: "90" },
+        { received: submitted, bids: [["99", "10"]], asks: [["100", "10"]] },
+        rules,
+        submitted,
+      ),
+    );
+    await f.service.control(a.id, "pause");
+    f.market.refresh = async function (base) {
+      return (this.books[base] = {
+        received: Date.now(),
+        bids: [["89", "10"]],
+        asks: [["90", "10"]],
+        step: ".001",
+      });
+    };
+    await f.service.tick();
+    const saved = f.service.accounts.get(a.id);
+    assert.equal(saved.orders[0].status, "filled");
+    assert.equal(saved.holdings.BTC.quantity, "1");
+    assert.equal(saved.cash, "909.91");
+    assert.equal(calls, 0);
+    assert.equal(saved.enabled, false);
+    assert.equal(saved.status, "paused");
+  } finally {
+    await f.service.stop();
+    f.store.close();
+  }
+});
+
+test("a fill during model inference invalidates the outdated action and strategy", async () => {
+  let release, entered;
+  const started = new Promise((r) => (entered = r));
+  const f = fixture(async () => {
+    entered();
+    return new Promise((r) => (release = r));
+  });
+  try {
+    const a = await f.create("1000");
+    const submitted = Date.now() - 1000;
+    await f.service.update(a.id, (r) => {
+      r.strategy = {
+        ...strategy,
+        revision: 1,
+        memory: "Keep this confirmed memory",
+      };
+      submitOrder(
+        r,
+        { base: "BTC", side: "buy", type: "limit", quantity: "1", price: "90" },
+        { received: submitted, bids: [["99", "10"]], asks: [["100", "10"]] },
+        rules,
+        submitted,
+      );
+    });
+    const evaluating = f.service.evaluate(a.id);
+    await started;
+    await f.service.update(a.id, (r) =>
+      processOrders(r, "BTC", {
+        received: Date.now(),
+        bids: [["89", "10"]],
+        asks: [["90", "10"]],
+        step: ".001",
+      }),
+    );
+    release({
+      decision: {
+        action: "buy",
+        type: "market",
+        quantity: "1",
+        strategy: { ...strategy, memory: "Outdated belief: no position yet" },
+        rationale: "Old entry",
+      },
+      inputTokens: 1,
+      outputTokens: 1,
+    });
+    await evaluating;
+    const saved = f.service.accounts.get(a.id);
+    assert.equal(saved.orders.length, 1);
+    assert.equal(saved.fills.length, 1);
+    assert.equal(saved.strategy.memory, "Keep this confirmed memory");
+    assert.equal(saved.journal[0].staleDecision, true);
+    assert.match(
+      saved.journal[0].result,
+      /Outdated action and strategy discarded/,
+    );
+  } finally {
     await f.service.stop();
     f.store.close();
   }

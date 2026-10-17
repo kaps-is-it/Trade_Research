@@ -8,7 +8,9 @@ import {
   balances,
   equity,
   submitOrder,
-  executeAIOrder,
+  submitAIOrder,
+  replaceAIOrder,
+  accountOrderState,
   positionMetrics,
   cancelOrder,
   processOrders,
@@ -81,18 +83,12 @@ export class TradingService {
           order.status = "cancelled";
           order.reason = "Worker restarted before this market order completed.";
         }
-      if (account.kind === "ai" && account.executionVersion !== 2) {
-        for (const order of account.orders.filter((o) =>
-          ["open", "partial"].includes(o.status),
-        )) {
-          cancelOrder(account, order.id);
-          order.reason =
-            "Legacy waiting order cancelled for immediate AI execution upgrade.";
-          this.record(account, {
-            result: `Cancelled legacy waiting order ${order.id}; funds released. Resume for a fresh AI decision.`,
-          });
-        }
-        account.executionVersion = 2;
+      if (account.kind === "ai" && account.executionVersion !== 3) {
+        account.executionVersion = 3;
+        this.record(account, {
+          result:
+            "AI market and GTC limit orders enabled with observed-depth fills. Existing resting limits are preserved; saved run controls are unchanged.",
+        });
       }
       await this.store.save(account);
     }
@@ -129,7 +125,7 @@ export class TradingService {
       if (this.accounts.size >= 32)
         throw new Error("This workspace supports up to 32 accounts.");
       const account = newAccount(input);
-      if (account.kind === "ai") account.executionVersion = 2;
+      if (account.kind === "ai") account.executionVersion = 3;
       if (account.kind === "ai" && !providerReady(account.provider, this.env))
         account.status = "awaiting_model";
       this.record(account, {
@@ -161,7 +157,7 @@ export class TradingService {
         limitFills:
           "Only executable opposite-side depth; no candle-touch or queue-position fills.",
         aiExecution:
-          "Immediate full fill at fresh ask/bid; no depth or market impact model.",
+          "Market and GTC limit orders use observed top-20 depth after 500 ms. Partial fills supported; queue position and market impact are approximations.",
         quote: "USDT",
       },
       providers: Object.entries(PROVIDERS).map(([id, p]) => ({
@@ -391,35 +387,32 @@ export class TradingService {
         });
         return;
       }
-      const snapshot = {
-        asOf: Date.now(),
-        previousEvaluationAt: account.lastEvaluation || null,
-        positions: positionMetrics(
-          account,
-          this.market.books,
-          this.market.errors,
-        ),
-        bid: book.bids[0][0],
-        ask: book.asks[0][0],
-        candles,
-        rules: this.market.rules[account.base],
-        available: balances(account).available,
-        orderCeiling: D(account.initial)
-          .mul(account.maxOrderPercent)
-          .div(100)
-          .toFixed(),
-        minimumEquity: minimum.toFixed(),
-      };
-      await this.update(id, (a) => {
-        if (!a.enabled || controller.signal.aborted) return;
+      let snapshot;
+      const evaluatedAccount = await this.update(id, (a) => {
+        if (!a.enabled || controller.signal.aborted) return null;
+        checkBook(book, Date.now());
+        snapshot = {
+          asOf: Date.now(),
+          previousEvaluationAt: a.lastEvaluation || null,
+          positions: positionMetrics(a, this.market.books, this.market.errors),
+          bid: book.bids[0][0],
+          ask: book.asks[0][0],
+          candles,
+          rules: this.market.rules[a.base],
+          available: balances(a).available,
+          orderCeiling: D(a.initial).mul(a.maxOrderPercent).div(100).toFixed(),
+          minimumEquity: minimum.toFixed(),
+        };
         a.status = "evaluating";
         a.calls++;
         a.lastCandle = candleTime;
         a.lastEvaluation = Date.now();
+        return structuredClone(a);
       });
-      if (controller.signal.aborted || !this.accounts.get(id)?.enabled) return;
+      if (!evaluatedAccount || controller.signal.aborted) return;
+      const evaluatedState = accountOrderState(evaluatedAccount);
       this.store.assertHealthy?.();
-      const result = await this.decide(this.accounts.get(id), snapshot, {
+      const result = await this.decide(evaluatedAccount, snapshot, {
         env: this.env,
         signal: controller.signal,
         limiter: this.limiter,
@@ -433,7 +426,7 @@ export class TradingService {
       // A hold/cancel does not need new execution liquidity. Preserve its journal
       // even if the exchange becomes unavailable after the model responded.
       let executionBook, executionError;
-      if (["buy", "sell"].includes(result.decision.action)) {
+      if (["buy", "sell", "replace"].includes(result.decision.action)) {
         try {
           executionBook = await this.market.refresh(account.base);
         } catch (error) {
@@ -451,56 +444,105 @@ export class TradingService {
         const decisionId = randomUUID(),
           d = result.decision;
         const strategy = validateStrategy(d.strategy);
-        if (!D(a.holdings[a.base]?.quantity || 0).gt(0))
-          strategy.exitUrgency = 0;
-        a.strategy = {
-          ...strategy,
-          revision: (a.strategy?.revision || 0) + 1,
-          updatedAt: Date.now(),
-          marketAsOf: snapshot.asOf,
-          decisionId,
-        };
-
+        const changed = evaluatedState !== accountOrderState(a);
+        if (!changed) {
+          if (!D(a.holdings[a.base]?.quantity || 0).gt(0))
+            strategy.exitUrgency = 0;
+          a.strategy = {
+            ...strategy,
+            revision: (a.strategy?.revision || 0) + 1,
+            updatedAt: Date.now(),
+            marketAsOf: snapshot.asOf,
+            decisionId,
+          };
+        }
         a.inputTokens += result.inputTokens;
         a.outputTokens += result.outputTokens;
         let outcome = "No order submitted.",
           status = "waiting";
-        try {
-          if (d.action === "cancel") {
-            cancelOrder(a, d.orderId);
-            outcome = "Order cancelled.";
-          }
-          if (d.action === "buy" || d.action === "sell") {
-            if (executionError) throw executionError;
-            const currentValue = equity(a, this.market.prices());
-            if (currentValue === null || D(currentValue).lte(minimum))
-              throw new Error(
-                "Account valuation failed the execution-time loss check.",
-              );
-            const order = executeAIOrder(
-              a,
-              {
+        let orderId;
+        if (changed) {
+          outcome =
+            "Account orders or holdings changed during this evaluation. Outdated action and strategy discarded; a fresh evaluation will follow.";
+        } else
+          try {
+            const review = {
+              time: Date.now(),
+              decisionId,
+              strategyRevision: a.strategy.revision,
+              rationale: d.rationale,
+            };
+            if (d.action === "cancel") {
+              const target = a.orders.find((o) => o.id === d.orderId);
+              cancelOrder(a, d.orderId);
+              target.lastReview = review;
+              orderId = d.orderId;
+              outcome = `Order cancelled: ${d.orderId}. Unfilled reservations released.`;
+            }
+            if (["buy", "sell", "replace"].includes(d.action)) {
+              if (executionError) throw executionError;
+              const currentValue = equity(a, this.market.prices());
+              if (currentValue === null || D(currentValue).lte(minimum))
+                throw new Error(
+                  "Account valuation failed the execution-time loss check.",
+                );
+              const input = {
                 base: a.base,
                 side: d.action,
                 type: d.type,
                 quantity: d.quantity,
                 price: d.price,
                 decisionId,
-              },
-              executionBook,
-              this.market.rules[a.base],
-            );
-            outcome = `Filled ${order.filled} ${order.base} at average ${D(order.total).div(order.filled).toFixed()} USDT; value ${order.total} USDT; fee ${order.fee} USDT. Order ${order.id}`;
+              };
+              const order =
+                d.action === "replace"
+                  ? replaceAIOrder(
+                      a,
+                      d.orderId,
+                      input,
+                      executionBook,
+                      this.market.rules[a.base],
+                    )
+                  : submitAIOrder(
+                      a,
+                      input,
+                      executionBook,
+                      this.market.rules[a.base],
+                    );
+              orderId = order.id;
+              order.intent = {
+                strategyRevision: a.strategy.revision,
+                rationale: d.rationale,
+                condition:
+                  order.side === "buy"
+                    ? a.strategy.entryConditions
+                    : a.strategy.exitConditions,
+                invalidation: a.strategy.invalidation,
+              };
+              order.lastReview = review;
+              if (d.action === "replace")
+                a.orders.find((o) => o.id === d.orderId).lastReview = review;
+              outcome = `${d.action === "replace" ? "Order replaced" : "Order accepted"}: ${order.id}. ${order.side} ${order.quantity} ${order.base} ${order.type === "limit" ? `at ${order.limit} USDT or better (GTC)` : "at available market depth (IOC)"}; pending execution after at least 500 ms.`;
+            }
+            if (d.action === "hold") {
+              for (const order of a.orders.filter((o) =>
+                ["open", "partial"].includes(o.status),
+              ))
+                order.lastReview = review;
+              outcome =
+                "No change. Existing positions and pending orders retained.";
+            }
+          } catch (error) {
+            outcome = error.message;
+            status = "risk_blocked";
           }
-        } catch (error) {
-          outcome = error.message;
-          status = "risk_blocked";
-        }
         a.status = status;
         a.consecutiveErrors = 0;
         this.record(a, {
           id: decisionId,
-          strategy: structuredClone(a.strategy),
+          strategy: changed ? undefined : structuredClone(a.strategy),
+          staleDecision: changed,
+          orderId,
           action: d.action,
           rationale: d.rationale,
           result: outcome,
