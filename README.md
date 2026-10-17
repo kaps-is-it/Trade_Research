@@ -1,14 +1,15 @@
 # RunThisPR crypto terminal
 
-React + TypeScript + Vite application. Live spot-crypto data comes directly from Binance market-data-only endpoints, Coinbase Exchange and Kraken Spot WebSocket v2. No exchange account credentials are collected and no orders can be submitted.
+React + TypeScript + Vite application with a Node/SQLite paper-trading backend. Live spot-crypto research data comes from Binance market-data-only endpoints, Coinbase Exchange and Kraken Spot WebSocket v2. Orders are simulated inside the backend; no exchange trading credentials or live order endpoints are used.
 
 ## Local development
 
-Use Node 22+ (22.12+ for Vite) and pnpm 11.25.0:
+Use Node 24+ (including native SQLite) and pnpm 11.25.0:
 
 ```sh
 pnpm install
 pnpm dev
+pnpm backend # in a second terminal
 pnpm test
 pnpm build
 pnpm smoke:feeds
@@ -24,19 +25,24 @@ The development server is at http://127.0.0.1:5173. `pnpm preview` serves the pr
 - Equal-size 24h return heatmap for the tracked universe, feed health/age diagnostics and connection logs.
 - Pause/resume, bounded buffers, reconnect with backoff, stale-channel watchdog, abortable history requests and late-subscription-message protection.
 - Dark/light themes, responsive layouts, and a building-in-public research roadmap.
+- Paper Trading page: independently funded accounts, Binance USDT market/limit orders, balance reservations, depth-based partial fills, cancellations, decimal accounting, fees, holdings, P&L and recent-fill CSV export.
+- AI Simulations page: multiple simultaneous independent runs, custom starting capital and exact model IDs, provider catalogs, start/pause/resume, risk settings, daily call allowances, activity and decision journals.
+- Persistent single-process Node 24 worker and SQLite account/audit storage. OpenAI, OpenRouter and local Ollama adapters; model keys remain server-side. Without a configured provider, runs honestly wait for a model connection.
+
+See [backend setup, execution assumptions and hosting options](docs/TRADING_BACKEND.md) before connecting providers or deploying the backend. The loopback-only local worker runs without a hosting bill. A hosted backend and actual model credentials are not provisioned automatically.
 
 ## Data semantics and limits
 
 - Source policy lives in `src/market/types.ts`: `sourceFor` assigns the exchange and `assetsForVenue` limits subscriptions to assigned assets. Watchlists and Overview always use that same mapping. There is no overlapping background subscription to all assets on every exchange and no automatic exchange substitution during an outage.
 - Quotes, candles, trades and depth for each asset come from its assigned market. USDT and USD remain labeled separately; neither the UI nor CSV exports imply currency conversion or a composite executable price. Supplemental feeds are coverage extensions, not a replacement order book for Binance markets. Catalog assignments were checked on October 16, 2026 and should be reviewed as exchange listings change; dynamic universe discovery is not implemented.
 - Source diagnostics separate market-data frames from total frames (including acknowledgements/heartbeats) across the watchlist and selected-market sockets. Counts are not comparable trading volume. Binance best-bid/ask updates do not reset the last trade-price receipt timestamp.
-- The UI is a browser-session terminal. It does not yet provide a shared ingestion backend, persistent raw tick recording, gap-complete replay, a simulator or an AI trader. Closing the page stops its feeds.
+- Research charts remain browser-session feeds. A separate paper worker polls Binance depth for active runs, holdings and open orders even when charts are changed, paused or closed. The worker must be running. Raw tick/depth recording and gap-complete replay are not implemented.
 - Historical candles are fetched through public REST endpoints. Historical range is bounded by each provider. No interpolated/fabricated candles fill gaps.
 - Coinbase match `side` describes the maker; the tape reverses it to show the taker. Its current candle includes only trades observed by this session and is explicitly marked partial. Closed candles reconcile from REST every minute. Detected trade-ID discontinuities are logged; full trade recovery is not implemented.
 - Kraken JSON numeric lexemes are preserved before CRC32 calculation, including trailing zeroes. A checksum failure clears the visible book and triggers a new snapshot/reconnect.
 - Binance partial-depth messages are complete top-20 snapshots. Coinbase depth starts from a full Level 2 snapshot and applies absolute-size updates. These synchronization methods do not establish order queue position or executable liquidity.
 - Health represents channel transport. Per-quote timestamps separately disclose data freshness. Receive-minus-event time should not be described as precise network latency.
-- Prices are display numbers; the application does not perform monetary accounting. A future simulator must use exact decimal accounting separately.
+- Chart prices remain display numbers. The backend uses `decimal.js` for money, quantities, fees and reservations, with raw decimal strings from exchange depth. The current engine is a disclosed approximation, not exchange-perfect execution.
 
 ## Source documentation
 
@@ -52,7 +58,7 @@ Public-display and future AI-use permissions are separate from keyless access. T
 
 ## Deployment
 
-Production is hosted by the [runthispr Vercel project](https://vercel.com/kapil-patels-projects-dc94f2b1/runthispr), connected to this repository. Pushes to `main` trigger production deployments. Vercel uses the Vite preset, repository root `./`, `pnpm build`, and output directory `dist`. No environment variables are required.
+Production frontend is hosted by the [runthispr Vercel project](https://vercel.com/kapil-patels-projects-dc94f2b1/runthispr), connected to this repository. Pushes to `main` trigger frontend deployments. Vercel uses the Vite preset, repository root `./`, `pnpm build`, and output directory `dist`. Research pages need no environment variables. Trading pages require a hosted backend attached through `VITE_TRADING_API_URL`; otherwise they display a disconnected state. A frontend deployment does not start the Node/SQLite worker.
 
 The live site is https://www.runthispr.com; https://runthispr.com redirects there with HTTP 308. Namecheap DNS uses `A @ 216.198.79.1` and `CNAME www 2269b770111b2744.vercel-dns-017.com.`.
 

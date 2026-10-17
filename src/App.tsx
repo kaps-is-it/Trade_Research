@@ -35,6 +35,8 @@ import {
   Wifi,
   Zap,
   X,
+  Wallet,
+  FlaskConical,
 } from "lucide-react";
 import { market } from "./market/engine";
 import {
@@ -58,8 +60,9 @@ import type {
 } from "./market/types";
 import { PriceChart, numberPrice } from "./components/PriceChart";
 import type { ChartKind, Indicator } from "./components/PriceChart";
+import { TradingPages } from "./trading/TradingPages";
 
-type Page = "workspace" | "overview" | "sources" | "lab";
+type Page = "workspace" | "overview" | "sources" | "lab" | "paper" | "ai";
 const nfmt = (n: number | undefined, d = 2) =>
   n === undefined || !Number.isFinite(n)
     ? "—"
@@ -239,12 +242,16 @@ export function App() {
     overview: "Market overview",
     sources: "Data sources",
     lab: "The research lab",
+    paper: "Paper trading",
+    ai: "AI simulations",
   }[page];
   const subtitle = {
     workspace: "Your window into the crypto market.",
     overview: "The bigger picture, one market at a time.",
     sources: "Every connection. Every update. In the open.",
     lab: "An ambitious idea. Built one verified step at a time.",
+    paper: "Real market data. A space to practice every decision.",
+    ai: "Different models. Independent capital. Every decision in view.",
   }[page];
   const spread = q?.ask && q?.bid ? q.ask - q.bid : undefined;
   return (
@@ -277,6 +284,8 @@ export function App() {
             [
               { id: "workspace", label: "Markets", icon: Grid2X2 },
               { id: "overview", label: "Overview", icon: BarChart3 },
+              { id: "paper", label: "Paper trading", icon: Wallet },
+              { id: "ai", label: "AI simulations", icon: FlaskConical },
               { id: "sources", label: "Data sources", icon: Radio },
               { id: "lab", label: "Research lab", icon: BrainCircuit },
             ] as const
@@ -368,25 +377,34 @@ export function App() {
               </h1>
               <p>{subtitle}</p>
             </div>
-            <div className="page-actions">
-              <button
-                className="button secondary"
-                onClick={() => market.pause()}
-              >
-                {state.paused ? <Play size={14} /> : <Pause size={14} />}{" "}
-                {state.paused ? "Resume feeds" : "Pause feeds"}
-              </button>
-              <button
-                className="button primary"
-                onClick={() => {
-                  market.reconnect();
-                  setToast("Reconnecting all market feeds");
-                }}
-                disabled={state.paused}
-              >
-                <RefreshCw size={14} /> Refresh feeds
-              </button>
-            </div>
+            {page !== "ai" && (
+              <div className="page-actions">
+                <button
+                  className="button secondary"
+                  onClick={() => market.pause()}
+                >
+                  {state.paused ? <Play size={14} /> : <Pause size={14} />}{" "}
+                  {page === "paper"
+                    ? state.paused
+                      ? "Resume chart feeds"
+                      : "Pause chart feeds"
+                    : state.paused
+                      ? "Resume feeds"
+                      : "Pause feeds"}
+                </button>
+                <button
+                  className="button primary"
+                  onClick={() => {
+                    market.reconnect();
+                    setToast("Reconnecting all market feeds");
+                  }}
+                  disabled={state.paused}
+                >
+                  <RefreshCw size={14} />{" "}
+                  {page === "paper" ? "Refresh chart feeds" : "Refresh feeds"}
+                </button>
+              </div>
+            )}
           </div>
           {page === "workspace" && (
             <>
@@ -819,6 +837,14 @@ export function App() {
             />
           )}
           {page === "sources" && <Sources state={state} now={now} />}
+          {(page === "paper" || page === "ai") && (
+            <TradingPages
+              key={page}
+              mode={page === "paper" ? "manual" : "ai"}
+              state={state}
+              dark={dark}
+            />
+          )}
           {page === "lab" && (
             <Research
               onExplore={() => navigate("workspace")}
@@ -834,7 +860,8 @@ export function App() {
           )}
           <footer className="page-footer">
             <span>
-              <ShieldCheck size={13} /> Market data only · No real-money orders
+              <ShieldCheck size={13} /> Research & paper trading · No real-money
+              orders
             </span>
             <span>
               Built in public <span>✳</span> runthispr.com
@@ -1325,8 +1352,8 @@ function Research({
           </h2>
           <p>
             We’re building a place where AI can observe markets, test ideas with
-            paper trades, and learn from evidence. This is chapter one: the
-            data.
+            paper trades, and learn from evidence. Live markets now connect to a
+            paper-trading workspace and independent model experiments.
           </p>
           <div className="lab-actions">
             <button className="button primary" onClick={onExplore}>
@@ -1371,15 +1398,15 @@ function Research({
           {
             n: "02",
             title: "Paper execution",
-            text: "A simulated account with an explicit fill model, fees, positions and drawdown.",
-            state: "PLANNED",
+            text: "Independently funded accounts, decimal accounting, reservations, fees and depth-based fills.",
+            state: "LOCAL BACKEND READY",
             icon: Layers,
           },
           {
             n: "03",
-            title: "One strategy agent",
-            text: "Structured proposals, independent risk checks and a readable decision journal.",
-            state: "PLANNED",
+            title: "Independent model runs",
+            text: "Per-run models and capital, server risk checks and a readable decision journal. Provider connection required.",
+            state: "INTEGRATION READY",
             icon: BrainCircuit,
           },
           {
@@ -1413,8 +1440,8 @@ function Research({
           <p>
             Future strategies will be evaluated after costs and against unseen
             data. Paper results will include their assumptions and limitations.
-            The platform currently displays market data and does not execute
-            trades.
+            Orders remain inside the paper engine; no real-money orders are sent
+            to an exchange.
           </p>
         </div>
       </div>
