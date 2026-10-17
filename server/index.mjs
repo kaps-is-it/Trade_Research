@@ -6,11 +6,16 @@ import { SupabaseStore } from "./supabase-store.mjs";
 import { AccountStore } from "./store.mjs";
 import { TradingMarket } from "./market.mjs";
 import { TradingService } from "./service.mjs";
+import { ProviderLimiter } from "./rate-limit.mjs";
 
 export function createTradingServer(service, env = process.env) {
   const host = env.TRADING_HOST || "127.0.0.1",
     token = env.TRADING_ADMIN_TOKEN || "";
-  if (!["127.0.0.1", "localhost", "::1"].includes(host) && token.length < 24)
+  if (
+    (env.TRADING_PUBLIC_MODE === "true" ||
+      !["127.0.0.1", "localhost", "::1"].includes(host)) &&
+    token.length < 24
+  )
     throw new Error(
       "A hosted backend requires TRADING_ADMIN_TOKEN of at least 24 characters.",
     );
@@ -59,7 +64,9 @@ export function createTradingServer(service, env = process.env) {
     // A loopback-only development server needs no credential. Hosted mode always does.
     const canWrite = token
       ? equal(bearer, token)
-      : local && ["127.0.0.1", "localhost", "::1"].includes(host);
+      : env.TRADING_PUBLIC_MODE !== "true" &&
+        local &&
+        ["127.0.0.1", "localhost", "::1"].includes(host);
     const url = new URL(req.url, "http://localhost");
     try {
       if (req.method === "GET" && url.pathname === "/api/trading") {
@@ -123,18 +130,48 @@ if (
       process.env.SUPABASE_URL || process.env.SUPABASE_SECRET_KEY
         ? await SupabaseStore.open()
         : new AccountStore(),
-    service = new TradingService(store, new TradingMarket());
+    limiter = new ProviderLimiter({
+      path: resolve(
+        process.env.TRADING_RATE_STATE_PATH ||
+          "data/provider-rate-history.json",
+      ),
+    }),
+    service = new TradingService(
+      store,
+      new TradingMarket(),
+      process.env,
+      undefined,
+      limiter,
+    );
   await service.ready;
   const server = createTradingServer(service),
     port = Number(process.env.TRADING_PORT || 8787),
     host = process.env.TRADING_HOST || "127.0.0.1";
-  server.listen(port, host, () => {
+  server.listen(port, host, async () => {
     console.log(
       `Trading backend: http://${host}:${port} (paper execution only)`,
     );
     service.start();
+    if (process.env.TRADING_PUBLIC_URL) {
+      try {
+        await store.publishRuntime(process.env.TRADING_PUBLIC_URL);
+      } catch (error) {
+        console.error(error.message);
+        await shutdown();
+      }
+    }
   });
+  let shuttingDown = false;
+  const healthTimer = setInterval(() => {
+    if (store.failed) {
+      console.error(store.failed.message);
+      void shutdown();
+    }
+  }, 5000);
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    clearInterval(healthTimer);
     server.close();
     await service.stop();
     await store.close();
@@ -142,4 +179,8 @@ if (
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+  process.on("message", (message) => {
+    if (message?.action === "shutdown") void shutdown();
+  });
+  process.on("disconnect", () => void shutdown());
 }

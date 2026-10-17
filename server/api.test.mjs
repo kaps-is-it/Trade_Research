@@ -79,4 +79,12 @@ test("public binding requires a long owner credential", () => {
     () => createTradingServer({}, { TRADING_HOST: "0.0.0.0" }),
     /24 characters/,
   );
+  assert.throws(
+    () =>
+      createTradingServer(
+        {},
+        { TRADING_HOST: "127.0.0.1", TRADING_PUBLIC_MODE: "true" },
+      ),
+    /24 characters/,
+  );
 });

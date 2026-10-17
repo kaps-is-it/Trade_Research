@@ -128,7 +128,7 @@ export function parseDecision(text) {
 export async function requestDecision(
   account,
   snapshot,
-  { env = process.env, fetcher = fetch, signal } = {},
+  { env = process.env, fetcher = fetch, signal, limiter } = {},
 ) {
   if (!providerReady(account.provider, env))
     throw new Error("Model connection is not configured.");
@@ -155,10 +155,16 @@ export async function requestDecision(
           ? { temperature: 0.5, top_p: 1 }
           : {}),
       };
-  const response = await fetcher(
-    `${base}/${isOpenAI ? "responses" : "chat/completions"}`,
-    { method: "POST", headers, body: JSON.stringify(body), signal },
-  );
+  const send = () =>
+    fetcher(`${base}/${isOpenAI ? "responses" : "chat/completions"}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    });
+  const response = limiter
+    ? await limiter.request(account.provider, send, signal)
+    : await send();
   if (!response.ok)
     throw new Error(
       `Model provider returned HTTP ${response.status}. Check the model ID, account access and quota.`,

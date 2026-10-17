@@ -6,6 +6,9 @@
   "packageManager": "pnpm@11.25.0",
   "scripts": {
     "backend": "node --env-file-if-exists=.env server/index.mjs",
+    "laptop": "node scripts/laptop-worker.mjs",
+    "laptop:setup": "node scripts/setup-laptop.mjs",
+    "laptop:stop": "node scripts/laptop-worker.mjs --stop",
     "test:trading": "node --test server/*.test.mjs",
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",

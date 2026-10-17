@@ -54,19 +54,13 @@ export function newAccount(input, now = Date.now()) {
   )
     throw new Error("Select a provider and enter its exact model ID.");
   const maxOrderPercent = Number(input.maxOrderPercent ?? 25),
-    lossLimitPercent = Number(input.lossLimitPercent ?? 10),
-    maxCalls = Number(input.maxCalls ?? 24);
+    lossLimitPercent = Number(input.lossLimitPercent ?? 10);
   if (
     ![maxOrderPercent, lossLimitPercent].every(
       (n) => Number.isFinite(n) && n >= 1 && n <= 100,
-    ) ||
-    !Number.isInteger(maxCalls) ||
-    maxCalls < 1 ||
-    maxCalls > 288
+    )
   )
-    throw new Error(
-      "Risk percentages must be 1–100; daily calls must be 1–288.",
-    );
+    throw new Error("Risk percentages must be 1–100.");
   return {
     id: randomUUID(),
     kind,
@@ -85,11 +79,10 @@ export function newAccount(input, now = Date.now()) {
     model,
     maxOrderPercent,
     lossLimitPercent,
-    maxCalls,
     calls: 0,
     callDay: new Date(now).toISOString().slice(0, 10),
     lastCandle: 0,
-    nextEvaluation: Math.ceil((now + 1) / 300000) * 300000,
+    nextEvaluation: now,
     totalFees: "0",
     fillCount: 0,
     inputTokens: 0,

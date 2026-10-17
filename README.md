@@ -26,10 +26,10 @@ The development server is at http://127.0.0.1:5173. `pnpm preview` serves the pr
 - Pause/resume, bounded buffers, reconnect with backoff, stale-channel watchdog, abortable history requests and late-subscription-message protection.
 - Dark/light themes, responsive layouts, and a building-in-public research roadmap.
 - Paper Trading page: independently funded accounts, Binance USDT market/limit orders, balance reservations, depth-based partial fills, cancellations, decimal accounting, fees, holdings, P&L and recent-fill CSV export.
-- AI Simulations page: multiple simultaneous independent runs, custom starting capital and exact model IDs, provider catalogs, start/pause/resume, risk settings, daily call allowances, activity and decision journals.
+- AI Simulations page: multiple simultaneous independent runs, custom starting capital and exact model IDs, provider catalogs, start/pause/resume, risk settings, continuous evaluations and shared provider throttling, activity and decision journals.
 - Persistent Node 24 worker with SQLite or Supabase account/audit storage. Cloud storage uses atomic saves, revision checks and a single-worker lease. OpenAI, OpenRouter, NVIDIA NIM and local Ollama adapters; model keys remain server-side. NVIDIA's GLM 5.3, DeepSeek V4.1 Flash and Nemotron 3 Ultra presets are selectable per run. Without a configured provider, runs honestly wait for a model connection.
 
-See [Supabase connection and migrations](docs/SUPABASE.md) and [backend setup, execution assumptions and hosting options](docs/TRADING_BACKEND.md) before connecting providers or deploying the backend. The loopback-only local worker runs without a hosting bill. A hosted backend and actual model credentials are not provisioned automatically.
+See [laptop hosting and continuous AI](docs/LAPTOP_BACKEND.md), [Supabase connection and migrations](docs/SUPABASE.md) and [backend setup, execution assumptions and hosting options](docs/TRADING_BACKEND.md) before connecting providers or deploying the backend. The loopback-only local worker runs without a hosting bill. A hosted backend and actual model credentials are not provisioned automatically.
 
 ## Data semantics and limits
 
@@ -58,7 +58,7 @@ Public-display and future AI-use permissions are separate from keyless access. T
 
 ## Deployment
 
-Production frontend is hosted by the [runthispr Vercel project](https://vercel.com/kapil-patels-projects-dc94f2b1/runthispr), connected to this repository. Pushes to `main` trigger frontend deployments. Vercel uses the Vite preset, repository root `./`, `pnpm build`, and output directory `dist`. Research pages need no environment variables. Trading pages require a hosted backend attached through `VITE_TRADING_API_URL`; otherwise they display a disconnected state. A frontend deployment does not start the Node/SQLite worker.
+Production frontend is hosted by the [runthispr Vercel project](https://vercel.com/kapil-patels-projects-dc94f2b1/runthispr), connected to this repository. Pushes to `main` trigger frontend deployments. Vercel uses the Vite preset, repository root `./`, `pnpm build`, and output directory `dist`. Research pages need no environment variables. Trading pages discover the active laptop backend through public Supabase connection metadata. A separate hosted worker can override this with `VITE_TRADING_API_URL`. The page displays a disconnected state when the backend is offline. A frontend deployment does not start the Node/SQLite worker.
 
 The live site is https://www.runthispr.com; https://runthispr.com redirects there with HTTP 308. Namecheap DNS uses `A @ 216.198.79.1` and `CNAME www 2269b770111b2744.vercel-dns-017.com.`.
 

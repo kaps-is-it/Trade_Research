@@ -6,6 +6,7 @@ export class SupabaseStore {
   revisions = new Map();
   failed = null;
   closing = false;
+  publicUrl = null;
 
   static async open(env = process.env, request = fetch) {
     const store = new SupabaseStore(env, request);
@@ -28,8 +29,9 @@ export class SupabaseStore {
         if (!store.renewing && !store.failed && !store.closing) {
           store.renewing = store
             .rpc("trading_claim_worker", { p_holder: store.holder })
-            .then((ok) => {
+            .then(async (ok) => {
               if (!ok) throw new Error("Trading worker lease lost.");
+              if (store.publicUrl) await store.publishRuntime(store.publicUrl);
             })
             .catch(() => {
               store.failed = new Error(
@@ -86,6 +88,17 @@ export class SupabaseStore {
   }
   rpc(name, body) {
     return this.call(`rpc/${name}`, body);
+  }
+  async publishRuntime(url) {
+    if (!/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(url))
+      throw new Error(
+        "Laptop publishing requires an HTTPS trycloudflare.com URL.",
+      );
+    await this.rpc("trading_publish_runtime", {
+      p_holder: this.holder,
+      p_url: url,
+    });
+    this.publicUrl = url;
   }
   assertHealthy() {
     if (this.failed) throw this.failed;

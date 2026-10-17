@@ -78,7 +78,11 @@ test("two runs evaluate independently and orders use a refreshed execution snaps
       assert.equal(row.inputTokens, 4);
     }
     await f.service.evaluate(a.id);
-    assert.equal(seen.length, 2, "same closed candle is never evaluated twice");
+    assert.equal(
+      seen.length,
+      3,
+      "fresh snapshots can be evaluated within the same closed candle",
+    );
   } finally {
     await f.service.stop();
     f.store.close();
@@ -119,24 +123,29 @@ test("pausing while a model is in flight prevents its order from being placed", 
     f.store.close();
   }
 });
-test("daily request caps and missing provider connections never invoke a model", async () => {
+test("large daily counts never stop continuous evaluation; unconfigured providers wait", async () => {
   let calls = 0;
   const f = fixture(async () => {
     calls++;
+    return {
+      decision: { action: "hold", rationale: "Observe live prices" },
+      inputTokens: 1,
+      outputTokens: 1,
+    };
   });
   try {
     const a = await f.create("1000");
     await f.service.update(a.id, (r) => {
-      r.calls = r.maxCalls;
+      r.calls = 100000;
     });
     await f.service.evaluate(a.id);
-    assert.equal(f.service.accounts.get(a.id).status, "daily_limit");
-    assert.equal(calls, 0);
+    assert.equal(f.service.accounts.get(a.id).status, "waiting");
+    assert.equal(calls, 1);
     f.service.env = {};
     const b = await f.create("300");
     await f.service.evaluate(b.id);
     assert.equal(f.service.accounts.get(b.id).status, "awaiting_model");
-    assert.equal(calls, 0);
+    assert.equal(calls, 1);
   } finally {
     await f.service.stop();
     f.store.close();

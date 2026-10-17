@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { ProviderLimiter } from "./rate-limit.mjs";
 import {
   SYMBOLS,
   D,
@@ -25,24 +26,41 @@ export class TradingService {
   running = false;
   closed = false;
   pending = Promise.resolve();
-  constructor(store, market, env = process.env, decide = requestDecision) {
+  constructor(
+    store,
+    market,
+    env = process.env,
+    decide = requestDecision,
+    limiter = new ProviderLimiter(),
+  ) {
     this.store = store;
     this.market = market;
     this.env = env;
     this.decide = decide;
+    this.limiter = limiter;
     this.accounts = new Map(store.all().map((a) => [a.id, a]));
     this.ready = this.recover();
   }
   async recover() {
     for (const account of this.accounts.values()) {
+      const legacyDailyCap = "maxCalls" in account;
+      delete account.maxCalls;
+      if (
+        legacyDailyCap ||
+        ["daily_limit", "reading_data", "evaluating"].includes(account.status)
+      )
+        account.nextEvaluation = Date.now();
       account.totalFees ??= account.fills
         .reduce((sum, f) => sum.plus(f.fee), D(0))
         .toFixed();
       account.fillCount ??= account.fills.length;
-      if (account.status === "evaluating") {
+      if (
+        ["evaluating", "daily_limit", "reading_data"].includes(account.status)
+      ) {
         account.status = "waiting";
         this.record(account, {
-          result: "Interrupted evaluation was not replayed after restart.",
+          result:
+            "Worker recovered. Continuous evaluation will use a fresh market snapshot.",
         });
       }
       for (const order of account.orders)
@@ -108,7 +126,9 @@ export class TradingService {
       serverTime: Date.now(),
       storage: this.store.kind || "sqlite",
       storageError: this.store.failed?.message || null,
-      cadenceSeconds: 300,
+      cadenceSeconds: 2,
+      evaluationMode: "continuous",
+      rateLimits: { nvidia: this.limiter.snapshot("nvidia") },
       symbols: SYMBOLS,
       assumptions: {
         feePercent: "0.10",
@@ -145,10 +165,12 @@ export class TradingService {
   async catalog(provider) {
     if (!providerReady(provider, this.env)) return [];
     const { base, headers } = modelConnection(provider, this.env);
-    const r = await fetch(`${base}/models`, {
-      headers,
-      signal: AbortSignal.timeout(15000),
-    });
+    const signal = AbortSignal.timeout(60000);
+    const r = await this.limiter.request(
+      provider,
+      () => fetch(`${base}/models`, { headers, signal }),
+      signal,
+    );
     if (!r.ok) throw new Error(`Model catalog returned HTTP ${r.status}.`);
     const data = await r.json();
     return (data.data || [])
@@ -176,11 +198,11 @@ export class TradingService {
         : providerReady(a.provider, this.env)
           ? "waiting"
           : "awaiting_model";
-      a.nextEvaluation = Math.ceil((Date.now() + 1) / 300000) * 300000;
+      a.nextEvaluation = Date.now();
       if (!a.enabled) this.busy.get(id)?.abort();
       this.record(a, {
         result: a.enabled
-          ? "Run resumed. Awaiting the next closed candle."
+          ? "Run resumed. Continuous market evaluation enabled."
           : "Run paused. Existing orders remain monitored.",
       });
     });
@@ -260,9 +282,13 @@ export class TradingService {
           }
         });
       }
-      for (const account of this.accounts.values())
+      for (const account of [...this.accounts.values()].sort(
+        (a, b) =>
+          a.nextEvaluation - b.nextEvaluation ||
+          (a.lastEvaluation || 0) - (b.lastEvaluation || 0),
+      ))
         if (
-          this.busy.size < 2 &&
+          this.busy.size < 6 &&
           account.kind === "ai" &&
           account.enabled &&
           !this.busy.has(account.id) &&
@@ -304,26 +330,15 @@ export class TradingService {
           a.callDay = today;
           a.calls = 0;
         }
-        a.nextEvaluation = Math.ceil((Date.now() + 1) / 300000) * 300000;
-        if (a.calls >= a.maxCalls) {
-          a.status = "daily_limit";
-          return;
-        }
+        a.nextEvaluation = Date.now();
         a.status = "reading_data";
       });
-      if (this.accounts.get(id).status === "daily_limit") return;
       const book = await this.market.refresh(account.base),
         candles = await this.market.history(account.base);
       checkBook(book, Date.now());
       account = this.accounts.get(id);
       if (!account.enabled || controller.signal.aborted) return;
       const candleTime = candles.at(-1).time;
-      if (account.lastCandle >= candleTime) {
-        await this.update(id, (a) => {
-          a.status = "waiting";
-        });
-        return;
-      }
       const value = equity(account, this.market.prices()),
         minimum = D(account.initial)
           .mul(D(100).minus(account.lossLimitPercent))
@@ -369,6 +384,7 @@ export class TradingService {
       const result = await this.decide(this.accounts.get(id), snapshot, {
         env: this.env,
         signal: controller.signal,
+        limiter: this.limiter,
       });
       if (
         this.closed ||
@@ -432,6 +448,7 @@ export class TradingService {
           status = "risk_blocked";
         }
         a.status = status;
+        a.consecutiveErrors = 0;
         this.record(a, {
           id: decisionId,
           action: d.action,
@@ -462,18 +479,40 @@ export class TradingService {
       )
         await this.update(id, (a) => {
           a.status = "error";
+          a.consecutiveErrors = (a.consecutiveErrors || 0) + 1;
           this.record(a, { result: error.message });
         });
       else if (!this.closed && this.accounts.get(id)?.enabled)
         await this.update(id, (a) => {
           a.status = "error";
+          a.consecutiveErrors = (a.consecutiveErrors || 0) + 1;
           this.record(a, {
             result: "Evaluation timed out. No model order was executed.",
           });
         });
     } finally {
       clearTimeout(timeout);
-      this.busy.delete(id);
+      try {
+        if (
+          !this.closed &&
+          !this.store.failed &&
+          this.accounts.get(id)?.enabled
+        )
+          await this.update(id, (a) => {
+            a.nextEvaluation =
+              Date.now() +
+              (a.status === "awaiting_model"
+                ? 30000
+                : a.consecutiveErrors
+                  ? Math.min(
+                      120000,
+                      15000 * 2 ** Math.min(3, a.consecutiveErrors - 1),
+                    )
+                  : 1000);
+          });
+      } finally {
+        this.busy.delete(id);
+      }
     }
   }
   start() {

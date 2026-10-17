@@ -48,13 +48,12 @@ const openOrder = (status: string) => ["open", "partial"].includes(status);
 const PAPER_INDICATORS: Indicator[] = ["Volume"];
 const STATUS: Record<string, string> = {
   awaiting_model: "Awaiting model connection",
-  waiting: "Waiting for candle",
+  waiting: "Monitoring live market",
   reading_data: "Reading market data",
   evaluating: "Evaluating account",
   paused: "Paused",
   risk_blocked: "Order blocked by risk checks",
   risk_stopped: "Loss limit reached",
-  daily_limit: "Daily call allowance reached",
   error: "Evaluation needs attention",
   ready: "Ready",
 };
@@ -511,7 +510,6 @@ function CreateAccount({
     [base, setBase] = useState("BTC"),
     [maxOrderPercent, setMaxOrder] = useState("25"),
     [lossLimitPercent, setLossLimit] = useState("10"),
-    [maxCalls, setMaxCalls] = useState("24"),
     [models, setModels] = useState<{ id: string; label: string }[]>([]),
     [catalogError, setCatalogError] = useState(""),
     [loading, setLoading] = useState(false);
@@ -537,7 +535,6 @@ function CreateAccount({
             base,
             maxOrderPercent: Number(maxOrderPercent),
             lossLimitPercent: Number(lossLimitPercent),
-            maxCalls: Number(maxCalls),
           })
         )
           setName("");
@@ -678,25 +675,15 @@ function CreateAccount({
                 required
               />
             </label>
-            <label>
-              Maximum AI requests per day
-              <input
-                type="number"
-                min="1"
-                max="288"
-                value={maxCalls}
-                onChange={(e) => setMaxCalls(e.target.value)}
-                required
-              />
-              <small>
-                Per simulation. Resets at 00:00 UTC. Failed requests count too.
-              </small>
-            </label>
           </>
         )}
       </div>
       {mode === "ai" && (
         <div className="model-connection-note">
+          <span>
+            Continuous evaluation. No daily cap. NVIDIA shares 30 requests/min
+            across all runs.
+          </span>
           <span className={ready ? "positive" : "muted"}>
             {ready
               ? "Provider configured on backend"
@@ -736,7 +723,7 @@ function CreateAccount({
       <div className="trading-form-footer">
         <span>
           {mode === "ai"
-            ? "Separate capital · five-minute evaluations · neutral model-facing account data"
+            ? "Separate capital · continuous evaluation · no daily request cap"
             : "Separate account · spot holdings · no exchange credentials"}
         </span>
         <button className="button primary" disabled={disabled}>
@@ -1027,7 +1014,7 @@ function AIActivity({
             <Activity size={16} />
             Current activity
           </h2>
-          <span className="trading-caption">{a.base}/USDT · 5m</span>
+          <span className="trading-caption">{a.base}/USDT · Continuous</span>
         </div>
         <div className="ai-current">
           <span className="ai-status-icon">
@@ -1041,7 +1028,7 @@ function AIActivity({
                 : a.status === "paused"
                   ? "New decisions are paused. Existing orders remain monitored."
                   : a.status === "evaluating"
-                    ? "The selected model is evaluating a timestamped account and market snapshot."
+                    ? "Waiting for provider capacity or evaluating a timestamped account and market snapshot."
                     : "Decisions use closed candles, account balances and executable market data."}
             </p>
           </div>
@@ -1103,11 +1090,21 @@ function AIActivity({
             <dd>{a.lossLimitPercent}% of initial capital</dd>
           </div>
           <div>
-            <dt>Calls today · UTC</dt>
-            <dd>
-              {usedCalls} / {a.maxCalls}
-            </dd>
+            <dt>Evaluations today · uncapped</dt>
+            <dd>{usedCalls}</dd>
           </div>
+          {a.provider === "nvidia" && (
+            <div>
+              <dt>NVIDIA connection · all runs</dt>
+              <dd>
+                {data?.rateLimits?.nvidia.usedLastMinute ?? 0} / 30 in the last
+                minute
+                {data?.rateLimits?.nvidia.queued
+                  ? ` · ${data.rateLimits.nvidia.queued} queued`
+                  : ""}
+              </dd>
+            </div>
+          )}
           <div>
             <dt>Tokens · input / output</dt>
             <dd>
