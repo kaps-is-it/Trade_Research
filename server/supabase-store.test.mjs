@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { SupabaseStore } from "./supabase-store.mjs";
 import { TradingService } from "./service.mjs";
+import { strategy } from "./test-fixtures.mjs";
 
 const env = {
   SUPABASE_URL: "https://example.supabase.co",
@@ -78,6 +79,30 @@ test("cloud commits precede visibility, queued edits preserve one another and du
     assert.equal(service.accounts.get(account.id).cash, "800");
     assert.equal(cloud.rows.get(account.id).state.cash, "800");
     assert.equal(store.all()[0].cash, "800");
+    await service.update(account.id, (a) => {
+      a.strategy = {
+        ...strategy,
+        revision: 3,
+        updatedAt: Date.now(),
+        marketAsOf: 1000,
+        decisionId: "strategy-audit",
+      };
+      service.record(a, {
+        id: "strategy-audit",
+        action: "hold",
+        result: "No order submitted.",
+        strategy: structuredClone(a.strategy),
+      });
+    });
+    const committed = cloud.requests
+      .filter((r) => r.url.includes("trading_save_account"))
+      .at(-1).body.p_account;
+    assert.equal(committed.strategy.memory, strategy.memory);
+    assert.deepEqual(
+      committed.journal[0].strategy,
+      committed.strategy,
+      "plan and decision audit share one account transaction",
+    );
     assert.equal(service.snapshot(true).storage, "supabase");
     assert.equal(
       cloud.requests[0].options.headers.apikey,
@@ -91,6 +116,8 @@ test("cloud commits precede visibility, queued edits preserve one another and du
     await store.close();
     const reloaded = await SupabaseStore.open(env, cloud.request);
     assert.equal(reloaded.all()[0].cash, "800");
+    assert.equal(reloaded.all()[0].strategy.memory, strategy.memory);
+    assert.equal(reloaded.all()[0].strategy.revision, 3);
     await reloaded.close();
   } finally {
     await service.stop();
