@@ -12,6 +12,8 @@ import {
 } from "./ledger.mjs";
 import {
   PROVIDERS,
+  MODEL_PRESETS,
+  modelTimeoutMs,
   providerReady,
   modelConnection,
   requestDecision,
@@ -99,6 +101,7 @@ export class TradingService {
         id,
         label: p.label,
         configured: providerReady(id, this.env),
+        models: MODEL_PRESETS[id] || [],
       })),
       markets: Object.fromEntries(
         Object.entries(this.market.books).map(([base, b]) => [
@@ -261,7 +264,10 @@ export class TradingService {
     if (this.closed || this.busy.has(id)) return;
     const controller = new AbortController();
     this.busy.set(id, controller);
-    const timeout = setTimeout(() => controller.abort(), 60000);
+    const timeout = setTimeout(
+      () => controller.abort(),
+      modelTimeoutMs(this.accounts.get(id)?.provider, this.env),
+    );
     try {
       let account = this.accounts.get(id);
       if (!account?.enabled) return;

@@ -1,3 +1,5 @@
+import MODEL_PRESETS from "../shared/model-presets.json" with { type: "json" };
+export { MODEL_PRESETS };
 export const PROVIDERS = {
   openai: {
     label: "OpenAI",
@@ -14,11 +16,25 @@ export const PROVIDERS = {
     base: "http://127.0.0.1:11434/v1",
     key: null,
   },
+  nvidia: {
+    label: "NVIDIA NIM",
+    base: "https://integrate.api.nvidia.com/v1",
+    key: "NVIDIA_NIM_API_KEY",
+  },
 };
 export function providerReady(provider, env = process.env) {
   return provider === "ollama"
     ? env.ENABLE_OLLAMA === "true"
     : !!env[PROVIDERS[provider]?.key];
+}
+export function modelTimeoutMs(provider, env = process.env) {
+  if (provider !== "nvidia") return 60000;
+  const configured = Number(env.NVIDIA_NIM_TIMEOUT_MS || 120000);
+  return Number.isInteger(configured) &&
+    configured >= 1000 &&
+    configured <= 180000
+    ? configured
+    : 120000;
 }
 export function modelConnection(provider, env = process.env) {
   const config = PROVIDERS[provider];
@@ -135,6 +151,9 @@ export async function requestDecision(
         ],
         max_tokens: 1400,
         stream: false,
+        ...(account.provider === "nvidia"
+          ? { temperature: 0.5, top_p: 1 }
+          : {}),
       };
   const response = await fetcher(
     `${base}/${isOpenAI ? "responses" : "chat/completions"}`,
@@ -145,6 +164,10 @@ export async function requestDecision(
       `Model provider returned HTTP ${response.status}. Check the model ID, account access and quota.`,
     );
   const data = await response.json();
+  if (!isOpenAI && data.choices?.[0]?.finish_reason === "length")
+    throw new Error(
+      "Model reached its output-token limit before completing the decision. No order was submitted.",
+    );
   const text = isOpenAI
     ? data.output
         ?.flatMap((o) => o.content || [])

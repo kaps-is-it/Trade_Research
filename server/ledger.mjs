@@ -49,7 +49,7 @@ export function newAccount(input, now = Date.now()) {
     model = String(input.model || "").trim();
   if (
     kind === "ai" &&
-    (!["openai", "openrouter", "ollama"].includes(provider) ||
+    (!["openai", "openrouter", "ollama", "nvidia"].includes(provider) ||
       !/^[\w./:@+-]{1,160}$/.test(model))
   )
     throw new Error("Select a provider and enter its exact model ID.");

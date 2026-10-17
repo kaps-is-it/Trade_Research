@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import Decimal from "decimal.js";
+import MODEL_PRESETS from "../../shared/model-presets.json";
 import { PriceChart, numberPrice } from "../components/PriceChart";
 import type { Indicator } from "../components/PriceChart";
 import { market } from "../market/engine";
@@ -494,7 +495,9 @@ function CreateAccount({
 }) {
   const [name, setName] = useState(""),
     [capital, setCapital] = useState("1000"),
-    [provider, setProvider] = useState("openai"),
+    [provider, setProvider] = useState(
+      () => data?.providers.find((p) => p.configured)?.id || "nvidia",
+    ),
     [model, setModel] = useState(""),
     [base, setBase] = useState("BTC"),
     [maxOrderPercent, setMaxOrder] = useState("25"),
@@ -504,6 +507,10 @@ function CreateAccount({
     [catalogError, setCatalogError] = useState(""),
     [loading, setLoading] = useState(false);
   const ready = data?.providers.find((p) => p.id === provider)?.configured;
+  const presets =
+    (MODEL_PRESETS as Record<string, { id: string; label: string }[]>)[
+      provider
+    ] || [];
   return (
     <form
       className="panel create-trading-account"
@@ -585,6 +592,7 @@ function CreateAccount({
                     { id: "openai", label: "OpenAI" },
                     { id: "openrouter", label: "OpenRouter" },
                     { id: "ollama", label: "Local / Ollama" },
+                    { id: "nvidia", label: "NVIDIA NIM" },
                   ]
                 ).map((p) => (
                   <option key={p.id} value={p.id}>
@@ -593,6 +601,24 @@ function CreateAccount({
                 ))}
               </select>
             </label>
+            {!!presets.length && (
+              <label>
+                Model selection
+                <select
+                  value={presets.some((p) => p.id === model) ? model : "custom"}
+                  onChange={(e) =>
+                    setModel(e.target.value === "custom" ? "" : e.target.value)
+                  }
+                >
+                  <option value="custom">Enter a model ID</option>
+                  {presets.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label>
               Model ID
               <input

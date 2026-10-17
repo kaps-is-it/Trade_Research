@@ -1,0 +1,10 @@
+{
+  "nvidia": [
+    { "id": "z-ai/glm-5.3", "label": "GLM 5.3" },
+    { "id": "deepseek-ai/deepseek-v4.1-flash", "label": "DeepSeek V4.1 Flash" },
+    {
+      "id": "nvidia/nemotron-3-ultra-550b-a55b",
+      "label": "Nemotron 3 Ultra 550B A55B"
+    }
+  ]
+}
