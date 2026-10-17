@@ -198,3 +198,45 @@ test("SQLite retains audit records beyond bounded page histories", async () => {
     f.store.close();
   }
 });
+
+test("continuous scheduler bounds concurrency and gives waiting runs their turn", async () => {
+  const entered = [],
+    releases = [];
+  const reply = {
+    decision: { action: "hold", rationale: "No entry" },
+    inputTokens: 1,
+    outputTokens: 1,
+  };
+  const f = fixture((account) => {
+    entered.push(account.id);
+    return new Promise((resolve) => {
+      releases.push(() => resolve(reply));
+    });
+  });
+  const settle = async (condition) => {
+    for (let i = 0; i < 100 && !condition(); i++)
+      await new Promise((resolve) => setImmediate(resolve));
+    assert(condition(), "scheduler operation should settle");
+  };
+  try {
+    const accounts = [];
+    for (let i = 0; i < 8; i++) accounts.push(await f.create("300"));
+    await f.service.tick();
+    await settle(() => entered.length === 6);
+    assert.equal(f.service.busy.size, 6);
+    await f.service.tick();
+    assert.equal(entered.length, 6);
+    releases.forEach((release) => release());
+    await settle(() => f.service.busy.size === 0);
+    await f.service.tick();
+    await settle(() => entered.length === 8);
+    assert.deepEqual(
+      entered.slice(-2),
+      accounts.slice(-2).map((a) => a.id),
+    );
+  } finally {
+    releases.forEach((release) => release());
+    await f.service.stop();
+    f.store.close();
+  }
+});
