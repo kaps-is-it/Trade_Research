@@ -18,15 +18,18 @@ The development server is at http://127.0.0.1:5173. `pnpm preview` serves the pr
 
 ## Implemented
 
-- Twelve tracked assets on each of three independent spot venues; Binance USDT pairs and Coinbase/Kraken USD pairs remain distinct.
-- Live watchlists, search, favorites, venue switching, five intervals, candle/OHLC/line/area charts, volume, SMA20, EMA50, RSI14, log scale and CSV export.
-- Taker-side trade tape, snapshot-based Binance top-20 depth, Coinbase Level 2 batching, and Kraken top-10 depth with exact-decimal CRC32 verification.
+- Fourteen assets with automatic source routing: the original twelve use Binance USDT markets; Monero uses Kraken XMR/USD and Arcblock uses Coinbase ABT-USD, covering gaps in Binance's active spot catalog.
+- Live watchlists, search, favorites, five intervals, candle/OHLC/line/area charts, volume, SMA20, EMA50, RSI14, log scale and CSV export. Users select assets; the source is assigned internally.
+- Taker-side trade tape, real-time Binance best quotes and top-20 depth snapshots, Coinbase Level 2 batching (up to 100 displayed levels), and Kraken 100-level depth with exact-decimal CRC32 verification of the top ten levels.
 - Equal-size 24h return heatmap for the tracked universe, feed health/age diagnostics and connection logs.
 - Pause/resume, bounded buffers, reconnect with backoff, stale-channel watchdog, abortable history requests and late-subscription-message protection.
 - Dark/light themes, responsive layouts, and a building-in-public research roadmap.
 
 ## Data semantics and limits
 
+- Source policy lives in `src/market/types.ts`: `sourceFor` assigns the exchange and `assetsForVenue` limits subscriptions to assigned assets. Watchlists and Overview always use that same mapping. There is no overlapping background subscription to all assets on every exchange and no automatic exchange substitution during an outage.
+- Quotes, candles, trades and depth for each asset come from its assigned market. USDT and USD remain labeled separately; neither the UI nor CSV exports imply currency conversion or a composite executable price. Supplemental feeds are coverage extensions, not a replacement order book for Binance markets. Catalog assignments were checked on October 16, 2026 and should be reviewed as exchange listings change; dynamic universe discovery is not implemented.
+- Source diagnostics separate market-data frames from total frames (including acknowledgements/heartbeats) across the watchlist and selected-market sockets. Counts are not comparable trading volume. Binance best-bid/ask updates do not reset the last trade-price receipt timestamp.
 - The UI is a browser-session terminal. It does not yet provide a shared ingestion backend, persistent raw tick recording, gap-complete replay, a simulator or an AI trader. Closing the page stops its feeds.
 - Historical candles are fetched through public REST endpoints. Historical range is bounded by each provider. No interpolated/fabricated candles fill gaps.
 - Coinbase match `side` describes the maker; the tape reverses it to show the taker. Its current candle includes only trades observed by this session and is explicitly marked partial. Closed candles reconcile from REST every minute. Detected trade-ID discontinuities are logged; full trade recovery is not implemented.

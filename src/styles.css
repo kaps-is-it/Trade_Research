@@ -1042,6 +1042,39 @@ input[type="checkbox"] {
   padding: 2px 4px;
   color: var(--muted);
 }
+.book-levels {
+  max-height: 260px;
+  overflow-y: auto;
+}
+.source-role {
+  font-size: 8px;
+  color: var(--muted);
+  letter-spacing: 0.5px;
+  margin-left: auto;
+}
+.source-details {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 15px 18px;
+  font-size: 10px;
+  color: var(--text);
+}
+.source-assignments {
+  font-size: 10px;
+  line-height: 1.9;
+  color: var(--muted);
+  margin-bottom: 18px;
+  min-height: 58px;
+}
+.source-assignments b {
+  color: var(--text);
+  font-weight: 500;
+}
+.heat-tile > .heat-source {
+  font-size: 9px;
+  color: var(--muted);
+}
 .book-head {
   display: flex;
   justify-content: space-between;
@@ -2412,7 +2445,7 @@ input[type="checkbox"] {
     font-size: 11px;
   }
   .book-panel .book-levels {
-    max-height: none;
+    max-height: 280px;
   }
   .book-panel .book-row {
     font-size: 11px;

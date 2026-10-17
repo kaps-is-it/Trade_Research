@@ -11,9 +11,11 @@ export async function fetchHistory(
   let url: string;
   if (venue === "binance")
     url = `https://data-api.binance.vision/api/v3/klines?symbol=${pair(venue, base)}&interval=${seconds === 86400 ? "1d" : seconds === 3600 ? "1h" : `${seconds / 60}m`}&limit=300`;
-  else if (venue === "coinbase")
-    url = `https://api.exchange.coinbase.com/products/${pair(venue, base)}/candles?granularity=${seconds}`;
-  else
+  else if (venue === "coinbase") {
+    // Explicit ranges avoid stale default-window responses and keep requests bounded.
+    const end = Math.floor(Date.now() / 1000 / seconds) * seconds;
+    url = `https://api.exchange.coinbase.com/products/${pair(venue, base)}/candles?granularity=${seconds}&start=${new Date((end - 299 * seconds) * 1000).toISOString()}&end=${new Date(end * 1000).toISOString()}`;
+  } else
     url = `https://api.kraken.com/0/public/OHLC?pair=${base === "BTC" ? "XBT" : base === "DOGE" ? "XDG" : base}USD&interval=${seconds / 60}`;
   const timeout = new AbortController();
   const timer = setTimeout(() => timeout.abort(), 15000);
@@ -58,16 +60,14 @@ export async function fetchHistory(
         ([k, v]) => k !== "last" && Array.isArray(v),
       )?.[1];
       if (!Array.isArray(values)) throw new Error("Invalid Kraken history");
-      rows = values
-        .slice(-300)
-        .map((r: any[]) => ({
-          time: Number(r[0]),
-          open: Number(r[1]),
-          high: Number(r[2]),
-          low: Number(r[3]),
-          close: Number(r[4]),
-          volume: Number(r[6]),
-        }));
+      rows = values.slice(-300).map((r: any[]) => ({
+        time: Number(r[0]),
+        open: Number(r[1]),
+        high: Number(r[2]),
+        low: Number(r[3]),
+        close: Number(r[4]),
+        volume: Number(r[6]),
+      }));
     }
     const result = cleanCandles(rows);
     if (!result.length) throw new Error("No candles returned for this market");

@@ -42,6 +42,10 @@ import {
   INTERVALS,
   VENUES,
   VENUE_META,
+  PRIMARY_VENUE,
+  assetsForVenue,
+  sourceFor,
+  sourceReason,
   pair,
   quoteKey,
 } from "./market/types";
@@ -225,7 +229,7 @@ export function App() {
     document.addEventListener("keydown", escape);
     return () => document.removeEventListener("keydown", escape);
   }, []);
-  const select = (b: string, v = venue) => market.select(v, b, interval);
+  const select = (b: string) => market.select(b, interval);
   const navigate = (p: Page) => {
     setPage(p);
     setShowIndicators(false);
@@ -279,6 +283,9 @@ export function App() {
           ).map((item) => (
             <button
               key={item.id}
+              aria-label={item.label}
+              title={item.label}
+              aria-current={page === item.id ? "page" : undefined}
               className={`nav-item ${page === item.id ? "active" : ""}`}
               onClick={() => navigate(item.id)}
             >
@@ -480,7 +487,8 @@ export function App() {
                           .toLowerCase()
                           .includes(search.toLowerCase()),
                     ).map((a) => {
-                      const price = state.quotes[quoteKey(venue, a.base)];
+                      const price =
+                        state.quotes[quoteKey(sourceFor(a.base), a.base)];
                       return (
                         <div
                           className={`market-row ${a.base === base ? "selected" : ""}`}
@@ -496,7 +504,9 @@ export function App() {
                             <span className="market-name">
                               <b>
                                 {a.base}
-                                <small>{meta.quote}</small>
+                                <small>
+                                  {VENUE_META[sourceFor(a.base)].quote}
+                                </small>
                               </b>
                               <span>{a.name}</span>
                             </span>
@@ -545,9 +555,9 @@ export function App() {
                       <span>24 / 7</span>
                     </div>
                     <p>
-                      Spot markets · {meta.name}
+                      Binance primary · extended coverage
                       <br />
-                      Prices quoted in {meta.quote}.
+                      Quote currency shown for every market.
                     </p>
                   </div>
                 </section>
@@ -567,17 +577,6 @@ export function App() {
                       </div>
                     </div>
                     <div className="chart-header-actions">
-                      <select
-                        aria-label="Exchange"
-                        value={venue}
-                        onChange={(e) => select(base, e.target.value as Venue)}
-                      >
-                        {VENUES.map((v) => (
-                          <option value={v} key={v}>
-                            {VENUE_META[v].name}
-                          </option>
-                        ))}
-                      </select>
                       <button
                         className="icon-button"
                         title="Fit chart to data"
@@ -606,7 +605,7 @@ export function App() {
                           key={i.seconds}
                           aria-pressed={interval === i.seconds}
                           className={interval === i.seconds ? "active" : ""}
-                          onClick={() => market.select(venue, base, i.seconds)}
+                          onClick={() => market.select(base, i.seconds)}
                         >
                           {i.label}
                         </button>
@@ -783,36 +782,29 @@ export function App() {
                 </section>
                 <section className="panel venues-panel">
                   <div className="panel-title">
-                    <h2>Across venues</h2>
+                    <h2>Market source</h2>
                     <Radio size={14} className="muted" />
                   </div>
-                  {VENUES.map((v) => {
-                    const p = state.quotes[quoteKey(v, base)];
-                    return (
-                      <button
-                        className={`venue-quote ${v === venue ? "chosen" : ""}`}
-                        key={v}
-                        onClick={() => select(base, v)}
-                      >
-                        <VenueMark venue={v} />
-                        <span>
-                          <b>{VENUE_META[v].name}</b>
-                          <small>{pair(v, base)}</small>
-                        </span>
-                        <span className="mono">
-                          <b>{p ? numberPrice(p.price) : "—"}</b>
-                          <small className={colorClass(p?.change)}>
-                            {pct(p?.change)}
-                          </small>
-                        </span>
-                      </button>
-                    );
-                  })}
+                  <div className="venue-quote chosen">
+                    <VenueMark venue={venue} />
+                    <span>
+                      <b>{meta.name}</b>
+                      <small>{pair(venue, base)}</small>
+                    </span>
+                    <span className="source-role">
+                      {venue === PRIMARY_VENUE ? "PRIMARY" : "EXTENDED"}
+                    </span>
+                  </div>
                   <p className="venue-note">
-                    Separate venues, separate books.
-                    <br />
-                    USD and USDT are different quote assets.
+                    {sourceReason(base)} Prices, charts and liquidity all come
+                    from this market.
                   </p>
+                  <button
+                    className="source-details"
+                    onClick={() => navigate("sources")}
+                  >
+                    View source coverage <ArrowUpRight size={12} />
+                  </button>
                 </section>
               </div>
             </>
@@ -904,7 +896,8 @@ export function App() {
             <p>
               This is the first chapter of an AI paper-trading research
               platform. Today, explore live spot-crypto prices, historical
-              charts, trades and liquidity from three independent exchanges.
+              charts, trades and liquidity. Binance is the primary source;
+              Kraken and Coinbase extend coverage where Binance has no market.
             </p>
             <p>
               Feeds connect directly from your browser while this terminal is
@@ -913,9 +906,9 @@ export function App() {
             </p>
             <p>
               Coinbase’s current candle is built from observed trades and may be
-              partial. Kraken depth is checked with CRC32; Binance depth uses
-              complete top-20 snapshots. Coinbase depth uses its snapshot/update
-              protocol.
+              partial. Kraken supplies 100 price levels per side with CRC32
+              verification of the top ten; Binance depth uses complete top-20
+              snapshots. Coinbase depth uses its snapshot/update protocol.
             </p>
             <p className="muted">
               Charts use{" "}
@@ -984,13 +977,16 @@ function Metric({
   );
 }
 function OrderBook({ state, now }: { state: MarketState; now: number }) {
+  const [levelsShown, setLevelsShown] = useState(7);
   const {
       book,
       selected: { venue, base },
     } = state,
     quote = VENUE_META[venue].quote;
-  const bids = book.bids.slice(0, 7),
-    asks = book.asks.slice(0, 7);
+  const depthLimit = venue === "binance" ? 20 : 100;
+  const visibleDepth = Math.min(levelsShown, depthLimit);
+  const bids = book.bids.slice(0, visibleDepth),
+    asks = book.asks.slice(0, visibleDepth);
   const max = Math.max(...[...bids, ...asks].map((l) => l.size), 1e-9);
   const mid =
     bids[0] && asks[0] ? (bids[0].price + asks[0].price) / 2 : undefined;
@@ -999,7 +995,20 @@ function OrderBook({ state, now }: { state: MarketState; now: number }) {
     <section className="panel book-panel">
       <div className="panel-title">
         <h2>Order book</h2>
-        <span className="book-depth">L2</span>
+        <select
+          className="book-depth"
+          aria-label="Visible book levels"
+          value={visibleDepth}
+          onChange={(e) => setLevelsShown(Number(e.target.value))}
+        >
+          {[7, 20, 50, 100]
+            .filter((n) => n <= depthLimit)
+            .map((n) => (
+              <option key={n} value={n}>
+                {n} levels
+              </option>
+            ))}
+        </select>
       </div>
       <div className="book-head">
         <span>Price ({quote})</span>
@@ -1065,11 +1074,9 @@ function Overview({
   state: MarketState;
   select: (base: string) => void;
 }) {
-  const v = state.selected.venue,
-    meta = VENUE_META[v];
   const rows = ASSETS.map((a) => ({
     ...a,
-    q: state.quotes[quoteKey(v, a.base)],
+    q: state.quotes[quoteKey(sourceFor(a.base), a.base)],
   }));
   const valid = rows.filter((a) => a.q?.change !== undefined);
   const advancing = valid.filter((a) => (a.q?.change ?? 0) > 0).length;
@@ -1089,23 +1096,6 @@ function Overview({
           TRACKED SPOT UNIVERSE · {ASSETS.length} ASSETS
         </span>
         <div>
-          <select
-            aria-label="Overview exchange"
-            value={v}
-            onChange={(e) =>
-              market.select(
-                e.target.value as Venue,
-                state.selected.base,
-                state.selected.interval,
-              )
-            }
-          >
-            {VENUES.map((v) => (
-              <option key={v} value={v}>
-                {VENUE_META[v].name}
-              </option>
-            ))}
-          </select>
           <select
             aria-label="Sort overview"
             value={sort}
@@ -1137,7 +1127,7 @@ function Overview({
         <p>
           Equal-size tiles · rolling 24h price change
           <br />
-          {meta.name} · quoted in {meta.quote}
+          Each asset retains its source and quote currency
         </p>
       </div>
       <div className="heatmap-grid">
@@ -1157,7 +1147,11 @@ function Overview({
             </h2>
             <strong className="mono">{pct(a.q?.change)}</strong>
             <span className="mono">
-              {a.q ? numberPrice(a.q.price) : "Waiting for quote"} {meta.quote}
+              {a.q ? numberPrice(a.q.price) : "Waiting for quote"}{" "}
+              {VENUE_META[sourceFor(a.base)].quote}
+            </span>
+            <span className="heat-source">
+              {VENUE_META[sourceFor(a.base)].name}
             </span>
           </button>
         ))}
@@ -1165,9 +1159,10 @@ function Overview({
       <div className="info-strip">
         <Globe2 size={16} />
         <p>
-          This view covers the {ASSETS.length} tracked spot assets on{" "}
-          {meta.name}. It does not represent total market capitalization or the
-          entire crypto market.
+          This view covers {assetsForVenue(PRIMARY_VENUE).length} Binance
+          markets and {ASSETS.length - assetsForVenue(PRIMARY_VENUE).length}{" "}
+          additional markets from specialist sources. It does not represent
+          total market capitalization or the entire crypto market.
         </p>
       </div>
     </>
@@ -1180,7 +1175,8 @@ function Sources({ state, now }: { state: MarketState; now: number }) {
         {VENUES.map((v) => {
           const h = state.health[v],
             meta = VENUE_META[v],
-            count = ASSETS.filter(
+            assigned = assetsForVenue(v),
+            count = assigned.filter(
               (a) => state.quotes[quoteKey(v, a.base)],
             ).length;
           return (
@@ -1189,7 +1185,12 @@ function Sources({ state, now }: { state: MarketState; now: number }) {
                 <VenueMark venue={v} />
                 <div>
                   <h2>{meta.name}</h2>
-                  <p>Spot markets · {meta.quote}</p>
+                  <p>
+                    {v === PRIMARY_VENUE
+                      ? "Primary source"
+                      : "Extended coverage"}{" "}
+                    · {meta.quote}
+                  </p>
                 </div>
                 <Status health={h} now={now} />
               </div>
@@ -1198,12 +1199,12 @@ function Sources({ state, now }: { state: MarketState; now: number }) {
                   <span>Quotes received</span>
                   <b className="mono">
                     {count}
-                    <small> / {ASSETS.length}</small>
+                    <small> / {assigned.length}</small>
                   </b>
                 </div>
                 <div>
-                  <span>Messages</span>
-                  <b className="mono">{compact(h.messages)}</b>
+                  <span>Market data frames</span>
+                  <b className="mono">{compact(h.marketUpdates)}</b>
                 </div>
                 <div>
                   <span>Last message</span>
@@ -1214,11 +1215,21 @@ function Sources({ state, now }: { state: MarketState; now: number }) {
                   <b className="mono">{h.reconnects}</b>
                 </div>
               </div>
+              <p className="source-assignments">
+                <b>Assigned markets</b>
+                <br />
+                {assigned.map((a) => `${a.base}/${meta.quote}`).join(" · ")}
+              </p>
               <p className="source-transport">
                 <Wifi size={14} />
                 {meta.transport}
               </p>
               <p className="source-channel">{meta.channels}</p>
+              <p className="source-channel">
+                {compact(h.messages)} total frames across active channels,
+                including control messages. Counts reflect each feed's batching
+                and subscriptions, not comparable trading volume.
+              </p>
               {h.error && <div className="inline-warning">{h.error}</div>}
               <div className="source-actions">
                 <a href={meta.url} target="_blank" rel="noreferrer">
@@ -1260,17 +1271,20 @@ function Sources({ state, now }: { state: MarketState; now: number }) {
         <section className="panel source-explainer">
           <span className="eyebrow">KNOW YOUR DATA</span>
           <h2>
-            Three venues.
+            One workspace.
             <br />
-            Three independent markets.
+            Sources with a purpose.
           </h2>
           <p>
-            Each exchange has its own prices, trades and liquidity. Binance
-            pairs use USDT; Coinbase and Kraken pairs use USD.
+            Binance supplies the core USDT markets. Kraken adds Monero and
+            Coinbase adds Arcblock, which have no active Binance spot listing.
+            Each asset is routed automatically to one source.
           </p>
           <p>
-            Transport health and quote freshness are separate. A connection can
-            be healthy even when an asset has not traded recently.
+            The selected market supplies its own prices, candles, trades and
+            order book. USD and USDT stay distinct. A source outage is shown
+            explicitly; it never silently replaces the market with another
+            exchange.
           </p>
           <div className="info-strip">
             <Radio size={16} />
@@ -1350,7 +1364,7 @@ function Research({
           {
             n: "01",
             title: "Market intelligence",
-            text: "Three live crypto venues, historical charts, trade flow and transparent feed health.",
+            text: "Binance-led crypto data, wider coverage from specialist sources, charts and transparent feed health.",
             state: "LIVE NOW",
             icon: Radio,
           },

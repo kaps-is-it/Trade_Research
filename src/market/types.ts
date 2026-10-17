@@ -13,7 +13,28 @@ export const ASSETS = [
   { base: "LTC", name: "Litecoin", color: "#a9c5d7", glyph: "Ł" },
   { base: "BCH", name: "Bitcoin Cash", color: "#8dc5a0", glyph: "Ƀ" },
   { base: "UNI", name: "Uniswap", color: "#e191b8", glyph: "U" },
+  { base: "XMR", name: "Monero", color: "#ed8b42", glyph: "ɱ" },
+  { base: "ABT", name: "Arcblock", color: "#78a3d9", glyph: "A" },
 ] as const;
+export const PRIMARY_VENUE: Venue = "binance";
+// Curated coverage exceptions, checked against the public spot instrument catalogs.
+// A failed connection never changes the market's exchange or quote currency.
+const COVERAGE_ROUTES: Record<string, { venue: Venue; reason: string }> = {
+  XMR: {
+    venue: "kraken",
+    reason: "Monero spot coverage is unavailable on Binance.",
+  },
+  ABT: {
+    venue: "coinbase",
+    reason: "Arcblock spot coverage is unavailable on Binance and Kraken.",
+  },
+};
+export const sourceFor = (base: string): Venue =>
+  COVERAGE_ROUTES[base]?.venue ?? PRIMARY_VENUE;
+export const sourceReason = (base: string): string =>
+  COVERAGE_ROUTES[base]?.reason ?? "Primary spot market quoted in USDT.";
+export const assetsForVenue = (venue: Venue) =>
+  ASSETS.filter((a) => sourceFor(a.base) === venue);
 export const INTERVALS = [
   { label: "1m", seconds: 60 },
   { label: "5m", seconds: 300 },
@@ -28,7 +49,8 @@ export const VENUE_META = {
     color: "#e9bd50",
     url: "https://github.com/binance/binance-spot-api-docs/blob/master/faqs/market_data_only.md",
     transport: "Market-data-only WebSocket",
-    channels: "24h ticker · trades · native candles · partial depth",
+    channels:
+      "24h statistics · real-time best quotes · trades · native candles · top-20 depth",
   },
   coinbase: {
     name: "Coinbase",
@@ -44,7 +66,8 @@ export const VENUE_META = {
     color: "#b69af5",
     url: "https://docs.kraken.com/exchange/api-reference/spot-websocket-v2/ticker",
     transport: "Spot WebSocket v2",
-    channels: "Ticker · trades · native OHLC · checksum-verified book",
+    channels:
+      "Ticker · trades · native OHLC · 100-level book with top-10 CRC32",
   },
 } as const;
 export const pair = (v: Venue, b: string) =>
@@ -62,6 +85,7 @@ export interface Quote {
   volume?: number;
   received: number;
   eventTime?: number;
+  bookReceived?: number;
 }
 export interface Candle {
   time: number;
@@ -97,6 +121,7 @@ export type Phase = "connecting" | "live" | "reconnecting" | "error" | "paused";
 export interface FeedHealth {
   phase: Phase;
   messages: number;
+  marketUpdates: number;
   lastMessage: number;
   reconnects: number;
   error?: string;

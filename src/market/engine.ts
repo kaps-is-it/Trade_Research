@@ -1,4 +1,13 @@
-import { ASSETS, VENUES, pair, quoteKey, emptyBook } from "./types";
+import {
+  ASSETS,
+  INTERVALS,
+  VENUES,
+  assetsForVenue,
+  sourceFor,
+  pair,
+  quoteKey,
+  emptyBook,
+} from "./types";
 import type {
   Book,
   Candle,
@@ -6,6 +15,7 @@ import type {
   Level,
   MarketState,
   Phase,
+  Quote,
   Trade,
   Venue,
 } from "./types";
@@ -26,6 +36,7 @@ type Connection = { socket?: WebSocket; stop: () => void };
 const health = (): FeedHealth => ({
   phase: "connecting",
   messages: 0,
+  marketUpdates: 0,
   lastMessage: 0,
   reconnects: 0,
 });
@@ -36,7 +47,7 @@ export class MarketEngine {
     candles: [],
     trades: [],
     book: emptyBook(),
-    selected: { venue: "kraken", base: "BTC", interval: 60 },
+    selected: { venue: sourceFor("BTC"), base: "BTC", interval: 60 },
     history: "loading",
     detail: "connecting",
     paused: false,
@@ -103,8 +114,13 @@ export class MarketEngine {
     clearInterval(this.reconcile);
     this.flush = undefined;
   }
-  select(venue: Venue, base: string, interval: number) {
-    if (!ASSETS.some((a) => a.base === base)) return;
+  select(base: string, interval: number) {
+    if (
+      !ASSETS.some((a) => a.base === base) ||
+      !INTERVALS.some((i) => i.seconds === interval)
+    )
+      return;
+    const venue = sourceFor(base);
     const p = this.state.selected;
     if (p.venue === venue && p.base === base && p.interval === interval) return;
     this.state.selected = { venue, base, interval };
@@ -199,11 +215,30 @@ export class MarketEngine {
             this.log(v, String(d.message ?? d.error), "warning");
             return;
           }
-          if (!focused)
-            this.setHealth(v, {
-              messages: this.state.health[v].messages + 1,
-              lastMessage: last,
-            });
+          const payload = d.data ?? d;
+          const isMarketData =
+            v === "binance"
+              ? !!(
+                  payload.e ||
+                  payload.lastUpdateId ||
+                  d.stream?.includes("@bookTicker")
+                )
+              : v === "coinbase"
+                ? [
+                    "ticker",
+                    "match",
+                    "last_match",
+                    "snapshot",
+                    "l2update",
+                  ].includes(d.type)
+                : ["ticker", "trade", "book", "ohlc"].includes(d.channel) &&
+                  ["snapshot", "update"].includes(d.type);
+          this.setHealth(v, {
+            messages: this.state.health[v].messages + 1,
+            marketUpdates:
+              this.state.health[v].marketUpdates + Number(isMarketData),
+            lastMessage: last,
+          });
           // Control acknowledgements and heartbeats establish transport health, not quote freshness.
           onData(d);
           if (
@@ -231,10 +266,9 @@ export class MarketEngine {
         attempt++;
         phase("reconnecting", "Disconnected; automatically retrying");
         if (focused) this.state.book = emptyBook();
-        else
-          this.setHealth(v, {
-            reconnects: this.state.health[v].reconnects + 1,
-          });
+        this.setHealth(v, {
+          reconnects: this.state.health[v].reconnects + 1,
+        });
         this.mark();
         timer = setTimeout(
           connect,
@@ -267,10 +301,24 @@ export class MarketEngine {
     return handle;
   }
   private connectTicker(v: Venue) {
-    const symbols = ASSETS.map((a) => pair(v, a.base));
+    const assigned = assetsForVenue(v);
+    const symbols = assigned.map((a) => pair(v, a.base));
+    if (!symbols.length) return;
+    const seedAbort = new AbortController();
+    const acceptQuote = (q: Quote | undefined) => {
+      if (!q || !assigned.some((a) => a.base === q.base)) return;
+      const key = quoteKey(v, q.base),
+        old = this.state.quotes[key];
+      if (old?.eventTime && q.eventTime && q.eventTime < old.eventTime) return;
+      this.state.quotes[key] =
+        old?.bookReceived && v === "binance"
+          ? { ...q, bid: old.bid, ask: old.ask, bookReceived: old.bookReceived }
+          : q;
+      this.mark();
+    };
     const url =
       v === "binance"
-        ? `wss://data-stream.binance.vision/stream?streams=${symbols.map((s) => s.toLowerCase() + "@ticker").join("/")}`
+        ? `wss://data-stream.binance.vision/stream?streams=${symbols.flatMap((s) => [s.toLowerCase() + "@ticker", s.toLowerCase() + "@bookTicker"]).join("/")}`
         : v === "coinbase"
           ? "wss://ws-feed.exchange.coinbase.com"
           : "wss://ws.kraken.com/v2";
@@ -278,6 +326,48 @@ export class MarketEngine {
       v,
       url,
       (ws) => {
+        if (v === "binance") {
+          // Binance's ticker has no initial snapshot: seed quiet markets too.
+          void fetch(
+            `https://data-api.binance.vision/api/v3/ticker/24hr?symbols=${encodeURIComponent(JSON.stringify(symbols))}`,
+            {
+              signal: AbortSignal.any([
+                seedAbort.signal,
+                AbortSignal.timeout(15000),
+              ]),
+            },
+          )
+            .then(async (response) => {
+              if (!response.ok)
+                throw new Error(`Quote snapshot HTTP ${response.status}`);
+              const rows = await response.json();
+              if (seedAbort.signal.aborted) return;
+              if (!Array.isArray(rows))
+                throw new Error("Invalid quote snapshot");
+              for (const row of rows)
+                acceptQuote(
+                  normalizeQuote(v, {
+                    s: row.symbol,
+                    c: row.lastPrice,
+                    b: row.bidPrice,
+                    a: row.askPrice,
+                    P: row.priceChangePercent,
+                    h: row.highPrice,
+                    l: row.lowPrice,
+                    v: row.volume,
+                    E: row.closeTime,
+                  }),
+                );
+            })
+            .catch(() => {
+              if (!seedAbort.signal.aborted)
+                this.log(
+                  v,
+                  "Initial quotes unavailable; waiting for stream updates",
+                  "warning",
+                );
+            });
+        }
         if (v === "coinbase")
           ws.send(
             JSON.stringify({
@@ -300,6 +390,26 @@ export class MarketEngine {
           );
       },
       (d) => {
+        if (v === "binance" && d.stream?.includes("@bookTicker")) {
+          const m = d.data;
+          const base = m.s?.replace(/USDT$/, "");
+          const old = this.state.quotes[quoteKey(v, base)];
+          if (
+            old &&
+            assigned.some((a) => a.base === base) &&
+            Number(m.b) > 0 &&
+            Number(m.a) >= Number(m.b)
+          ) {
+            this.state.quotes[quoteKey(v, base)] = {
+              ...old,
+              bid: +m.b,
+              ask: +m.a,
+              bookReceived: Date.now(),
+            };
+            this.mark();
+          }
+          return;
+        }
         const values =
           v === "binance"
             ? [d.data ?? d]
@@ -311,18 +421,16 @@ export class MarketEngine {
                 ? d.data
                 : [];
         for (const value of values ?? []) {
-          const q = normalizeQuote(v, value);
-          if (q) {
-            const old = this.state.quotes[quoteKey(v, q.base)];
-            if (old?.eventTime && q.eventTime && q.eventTime < old.eventTime)
-              continue;
-            this.state.quotes[quoteKey(v, q.base)] = q;
-            this.mark();
-          }
+          acceptQuote(normalizeQuote(v, value));
         }
       },
     );
-    this.connections.set(v, c);
+    this.connections.set(v, {
+      stop: () => {
+        seedAbort.abort();
+        c.stop();
+      },
+    });
   }
   private startFocus() {
     this.focused?.stop();
@@ -384,8 +492,12 @@ export class MarketEngine {
       method: string,
     ) => {
       this.state.book = {
-        bids: bids.sort((a, b) => b.price - a.price).slice(0, 20),
-        asks: asks.sort((a, b) => a.price - b.price).slice(0, 20),
+        bids: bids
+          .sort((a, b) => b.price - a.price)
+          .slice(0, v === "binance" ? 20 : 100),
+        asks: asks
+          .sort((a, b) => a.price - b.price)
+          .slice(0, v === "binance" ? 20 : 100),
         verified,
         method,
         received: Date.now(),
@@ -431,7 +543,7 @@ export class MarketEngine {
               interval: interval / 60,
               snapshot: true,
             },
-            { channel: "book", symbol: [symbol], depth: 10, snapshot: true },
+            { channel: "book", symbol: [symbol], depth: 100, snapshot: true },
           ])
             ws.send(JSON.stringify({ method: "subscribe", params }));
         void this.loadHistory(true);
@@ -439,6 +551,7 @@ export class MarketEngine {
       (d) => {
         if (v === "binance") {
           const m = d.data ?? d;
+          if (m.s && m.s !== symbol) return;
           if (m.e === "trade") addTrade(normalizeTrade(v, m));
           if (m.e === "kline") {
             const k = m.k;
@@ -460,6 +573,7 @@ export class MarketEngine {
               "Complete top-20 snapshots · 100 ms",
             );
         } else if (v === "coinbase") {
+          if (d.product_id && d.product_id !== symbol) return;
           if (d.type === "match" || d.type === "last_match") {
             if (d.type === "last_match") {
               const t = normalizeTrade(v, d);
@@ -523,10 +637,10 @@ export class MarketEngine {
               updateBook(askMap, b.asks ?? []);
               const bids = [...bidMap.values()]
                   .sort((a, b) => b.price - a.price)
-                  .slice(0, 10),
+                  .slice(0, 100),
                 asks = [...askMap.values()]
                   .sort((a, b) => a.price - b.price)
-                  .slice(0, 10);
+                  .slice(0, 100);
               bidMap = new Map(bids.map((l) => [String(l.price), l]));
               askMap = new Map(asks.map((l) => [String(l.price), l]));
               if (
@@ -538,7 +652,12 @@ export class MarketEngine {
                   "Book checksum mismatch; rebuilding from snapshot",
                 );
               }
-              publishBook(bids, asks, true, "Top 10 levels · CRC32 verified");
+              publishBook(
+                bids,
+                asks,
+                true,
+                "100 levels · CRC32 top 10 verified",
+              );
             }
         }
       },
