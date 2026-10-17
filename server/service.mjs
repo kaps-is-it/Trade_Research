@@ -24,12 +24,16 @@ export class TradingService {
   watched = new Map();
   running = false;
   closed = false;
+  pending = Promise.resolve();
   constructor(store, market, env = process.env, decide = requestDecision) {
     this.store = store;
     this.market = market;
     this.env = env;
     this.decide = decide;
     this.accounts = new Map(store.all().map((a) => [a.id, a]));
+    this.ready = this.recover();
+  }
+  async recover() {
     for (const account of this.accounts.values()) {
       account.totalFees ??= account.fills
         .reduce((sum, f) => sum.plus(f.fee), D(0))
@@ -49,44 +53,61 @@ export class TradingService {
           order.status = "cancelled";
           order.reason = "Worker restarted before this market order completed.";
         }
-      this.store.save(account);
+      await this.store.save(account);
     }
   }
   record(account, entry) {
     account.journal.unshift({ id: randomUUID(), time: Date.now(), ...entry });
     account.journal = account.journal.slice(0, 200);
   }
+  enqueue(fn) {
+    const operation = this.pending.then(async () => {
+      await this.ready;
+      if (this.closed) throw new Error("Trading backend is stopping.");
+      this.store.assertHealthy?.();
+      return fn();
+    });
+    this.pending = operation.catch(() => {});
+    return operation;
+  }
   update(id, fn) {
-    const original = this.accounts.get(id);
-    if (!original) throw new Error("Account not found.");
-    const next = structuredClone(original);
-    const result = fn(next);
-    this.store.save(next);
-    this.accounts.set(id, next);
-    return result;
+    return this.enqueue(async () => {
+      const original = this.accounts.get(id);
+      if (!original) throw new Error("Account not found.");
+      const next = structuredClone(original);
+      const result = fn(next);
+      if (JSON.stringify(next) !== JSON.stringify(original)) {
+        await this.store.save(next);
+        this.accounts.set(id, next);
+      }
+      return result;
+    });
   }
   create(input) {
-    if (this.accounts.size >= 32)
-      throw new Error("This workspace supports up to 32 accounts.");
-    const account = newAccount(input);
-    if (account.kind === "ai" && !providerReady(account.provider, this.env))
-      account.status = "awaiting_model";
-    this.record(account, {
-      result:
-        account.kind === "ai"
-          ? "Run created. Independent account and limits saved."
-          : "Manual paper account created.",
+    return this.enqueue(async () => {
+      if (this.accounts.size >= 32)
+        throw new Error("This workspace supports up to 32 accounts.");
+      const account = newAccount(input);
+      if (account.kind === "ai" && !providerReady(account.provider, this.env))
+        account.status = "awaiting_model";
+      this.record(account, {
+        result:
+          account.kind === "ai"
+            ? "Run created. Independent account and limits saved."
+            : "Manual paper account created.",
+      });
+      await this.store.save(account);
+      this.accounts.set(account.id, account);
+      return account;
     });
-    this.store.save(account);
-    this.accounts.set(account.id, account);
-    return account;
   }
   snapshot(canWrite = false) {
     const prices = this.market.prices();
     return {
-      canWrite,
+      canWrite: canWrite && !this.store.failed,
       serverTime: Date.now(),
-      storage: "sqlite",
+      storage: this.store.kind || "sqlite",
+      storageError: this.store.failed?.message || null,
       cadenceSeconds: 300,
       symbols: SYMBOLS,
       assumptions: {
@@ -165,7 +186,7 @@ export class TradingService {
     });
   }
   cancel(id, orderId) {
-    this.update(id, (a) => cancelOrder(a, orderId));
+    return this.update(id, (a) => cancelOrder(a, orderId));
   }
   watch(base) {
     if (SYMBOLS.includes(base)) this.watched.set(base, Date.now());
@@ -174,6 +195,8 @@ export class TradingService {
     if (this.running || this.closed) return;
     this.running = true;
     try {
+      await this.ready;
+      this.store.assertHealthy?.();
       const needed = new Set(
         [...this.watched]
           .filter(([, t]) => Date.now() - t < 15000)
@@ -201,7 +224,7 @@ export class TradingService {
               D(a.initial).mul(D(100).minus(a.lossLimitPercent)).div(100),
             )
           ) {
-            this.update(a.id, (next) => {
+            await this.update(a.id, (next) => {
               next.enabled = false;
               next.status = "risk_stopped";
               this.busy.get(a.id)?.abort();
@@ -217,31 +240,25 @@ export class TradingService {
             continue;
           }
         }
-        let updated;
-        for (const b of needed) {
-          if (
-            !a.orders.some(
-              (o) => o.base === b && ["open", "partial"].includes(o.status),
+        // Read the latest account inside the mutation queue, after any API writes.
+        await this.update(a.id, (next) => {
+          for (const b of needed) {
+            if (
+              !next.orders.some(
+                (o) => o.base === b && ["open", "partial"].includes(o.status),
+              )
             )
-          )
-            continue;
-          const book = this.market.books[b];
-          if (
-            !book ||
-            Date.now() - book.received > 5000 ||
-            this.market.errors[b]
-          )
-            continue;
-          updated ||= structuredClone(this.accounts.get(a.id));
-          processOrders(updated, b, book);
-        }
-        if (
-          updated &&
-          JSON.stringify(updated) !== JSON.stringify(this.accounts.get(a.id))
-        ) {
-          this.store.save(updated);
-          this.accounts.set(updated.id, updated);
-        }
+              continue;
+            const book = this.market.books[b];
+            if (
+              !book ||
+              Date.now() - book.received > 5000 ||
+              this.market.errors[b]
+            )
+              continue;
+            processOrders(next, b, book);
+          }
+        });
       }
       for (const account of this.accounts.values())
         if (
@@ -269,17 +286,20 @@ export class TradingService {
       modelTimeoutMs(this.accounts.get(id)?.provider, this.env),
     );
     try {
+      await this.ready;
+      this.store.assertHealthy?.();
       let account = this.accounts.get(id);
       if (!account?.enabled) return;
       if (!providerReady(account.provider, this.env)) {
-        this.update(id, (a) => {
+        await this.update(id, (a) => {
           a.status = "awaiting_model";
           a.nextEvaluation = Date.now() + 30000;
         });
         return;
       }
       const today = new Date().toISOString().slice(0, 10);
-      this.update(id, (a) => {
+      await this.update(id, (a) => {
+        if (!a.enabled || controller.signal.aborted) return;
         if (a.callDay !== today) {
           a.callDay = today;
           a.calls = 0;
@@ -299,7 +319,7 @@ export class TradingService {
       if (!account.enabled || controller.signal.aborted) return;
       const candleTime = candles.at(-1).time;
       if (account.lastCandle >= candleTime) {
-        this.update(id, (a) => {
+        await this.update(id, (a) => {
           a.status = "waiting";
         });
         return;
@@ -310,7 +330,7 @@ export class TradingService {
           .div(100);
       if (value === null) throw new Error("Holding valuation is stale.");
       if (D(value).lte(minimum)) {
-        this.update(id, (a) => {
+        await this.update(id, (a) => {
           a.enabled = false;
           a.status = "risk_stopped";
           for (const o of a.orders.filter((o) =>
@@ -337,12 +357,15 @@ export class TradingService {
           .toFixed(),
         minimumEquity: minimum.toFixed(),
       };
-      this.update(id, (a) => {
+      await this.update(id, (a) => {
+        if (!a.enabled || controller.signal.aborted) return;
         a.status = "evaluating";
         a.calls++;
         a.lastCandle = candleTime;
         a.lastEvaluation = Date.now();
       });
+      if (controller.signal.aborted || !this.accounts.get(id)?.enabled) return;
+      this.store.assertHealthy?.();
       const result = await this.decide(this.accounts.get(id), snapshot, {
         env: this.env,
         signal: controller.signal,
@@ -369,7 +392,8 @@ export class TradingService {
         !this.accounts.get(id)?.enabled
       )
         return;
-      this.update(id, (a) => {
+      await this.update(id, (a) => {
+        if (controller.signal.aborted || !a.enabled) return;
         const decisionId = randomUUID(),
           d = result.decision;
         a.inputTokens += result.inputTokens;
@@ -427,17 +451,21 @@ export class TradingService {
         });
       });
     } catch (error) {
+      if (this.store.failed) {
+        this.lastError = this.store.failed.message;
+        return;
+      }
       if (
         !this.closed &&
         this.accounts.get(id)?.enabled &&
         !controller.signal.aborted
       )
-        this.update(id, (a) => {
+        await this.update(id, (a) => {
           a.status = "error";
           this.record(a, { result: error.message });
         });
       else if (!this.closed && this.accounts.get(id)?.enabled)
-        this.update(id, (a) => {
+        await this.update(id, (a) => {
           a.status = "error";
           this.record(a, {
             result: "Evaluation timed out. No model order was executed.",
@@ -458,5 +486,6 @@ export class TradingService {
     for (const c of this.busy.values()) c.abort();
     while (this.running || this.busy.size)
       await new Promise((r) => setTimeout(r, 25));
+    await this.pending;
   }
 }

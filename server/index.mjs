@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { SupabaseStore } from "./supabase-store.mjs";
 import { AccountStore } from "./store.mjs";
 import { TradingMarket } from "./market.mjs";
 import { TradingService } from "./service.mjs";
@@ -92,7 +93,7 @@ export function createTradingServer(service, env = process.env) {
       if (!input || typeof input !== "object" || Array.isArray(input))
         throw new Error("Invalid request.");
       if (url.pathname === "/api/trading/accounts") {
-        const account = service.create(input);
+        const account = await service.create(input);
         return send(201, { id: account.id });
       }
       const route = url.pathname.match(
@@ -103,8 +104,8 @@ export function createTradingServer(service, env = process.env) {
         const order = await service.order(route[1], input);
         return send(201, { id: order.id });
       }
-      if (route[2] === "control") service.control(route[1], input.action);
-      if (route[2] === "cancel") service.cancel(route[1], input.orderId);
+      if (route[2] === "control") await service.control(route[1], input.action);
+      if (route[2] === "cancel") await service.cancel(route[1], input.orderId);
       return send(200, { ok: true });
     } catch (error) {
       return send(400, { error: error.message || "Request failed." });
@@ -118,8 +119,12 @@ if (
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
-  const store = new AccountStore(),
+  const store =
+      process.env.SUPABASE_URL || process.env.SUPABASE_SECRET_KEY
+        ? await SupabaseStore.open()
+        : new AccountStore(),
     service = new TradingService(store, new TradingMarket());
+  await service.ready;
   const server = createTradingServer(service),
     port = Number(process.env.TRADING_PORT || 8787),
     host = process.env.TRADING_HOST || "127.0.0.1";
@@ -132,7 +137,7 @@ if (
   const shutdown = async () => {
     server.close();
     await service.stop();
-    store.close();
+    await store.close();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);

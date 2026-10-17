@@ -66,8 +66,8 @@ test("two runs evaluate independently and orders use a refreshed execution snaps
       };
     });
   try {
-    const a = f.create("1000"),
-      b = f.create("300");
+    const a = await f.create("1000"),
+      b = await f.create("300");
     await Promise.all([f.service.evaluate(a.id), f.service.evaluate(b.id)]);
     assert.deepEqual(seen.map((s) => s[1]).sort(), ["1000", "300"]);
     for (const id of [a.id, b.id]) {
@@ -97,10 +97,10 @@ test("pausing while a model is in flight prevents its order from being placed", 
     return reply;
   });
   try {
-    const a = f.create("1000"),
+    const a = await f.create("1000"),
       evaluating = f.service.evaluate(a.id);
     await started;
-    f.service.control(a.id, "pause");
+    await f.service.control(a.id, "pause");
     release({
       decision: {
         action: "buy",
@@ -125,15 +125,15 @@ test("daily request caps and missing provider connections never invoke a model",
     calls++;
   });
   try {
-    const a = f.create("1000");
-    f.service.update(a.id, (r) => {
+    const a = await f.create("1000");
+    await f.service.update(a.id, (r) => {
       r.calls = r.maxCalls;
     });
     await f.service.evaluate(a.id);
     assert.equal(f.service.accounts.get(a.id).status, "daily_limit");
     assert.equal(calls, 0);
     f.service.env = {};
-    const b = f.create("300");
+    const b = await f.create("300");
     await f.service.evaluate(b.id);
     assert.equal(f.service.accounts.get(b.id).status, "awaiting_model");
     assert.equal(calls, 0);
@@ -147,8 +147,8 @@ test("worker loss checks stop a run and cancel pending orders before further exe
     throw new Error("Must not call");
   });
   try {
-    const a = f.create("1000");
-    f.service.update(a.id, (r) => {
+    const a = await f.create("1000");
+    await f.service.update(a.id, (r) => {
       r.cash = "800";
       r.nextEvaluation = 0;
       submitOrder(
@@ -169,14 +169,14 @@ test("worker loss checks stop a run and cancel pending orders before further exe
     f.store.close();
   }
 });
-test("SQLite retains audit records beyond bounded page histories", () => {
+test("SQLite retains audit records beyond bounded page histories", async () => {
   const f = fixture(async () => {});
   try {
-    const a = f.create("1000");
-    f.service.update(a.id, (r) => {
+    const a = await f.create("1000");
+    await f.service.update(a.id, (r) => {
       r.journal.unshift({ id: "audit-only", time: 1, result: "Old entry" });
     });
-    f.service.update(a.id, (r) => {
+    await f.service.update(a.id, (r) => {
       r.journal = [];
     });
     assert.equal(

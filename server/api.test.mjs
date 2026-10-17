@@ -64,7 +64,10 @@ test("hosted API is public-read/owner-write, rejects cross-origin mutations and 
     assert.equal(snapshot.accounts[1].cash, "300");
     assert.equal(snapshot.accounts[0].status, "awaiting_model");
     assert.equal(store.all().length, 2);
-    assert.equal(new TradingService(store, market, {}).accounts.size, 2);
+    const reloaded = new TradingService(store, market, {});
+    await reloaded.ready;
+    assert.equal(reloaded.accounts.size, 2);
+    await reloaded.stop();
     assert(!JSON.stringify(snapshot).includes(token));
   } finally {
     await new Promise((r) => server.close(r));

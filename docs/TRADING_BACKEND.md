@@ -16,6 +16,8 @@ Open http://127.0.0.1:5173. Vite proxies `/api/trading` to the backend on port 8
 
 Manual accounts and each AI simulation receive independent initial USDT balances. Up to 32 total accounts are supported. The model, provider, market, initial capital and risk settings are fixed per run; create a new run for a different experiment. Multiple runs can be enabled simultaneously; at most two model evaluations are in flight at once. Browser tabs observe the same backend accounts, rather than starting duplicate agents.
 
+For the configured cloud database, see [Supabase storage and deployment](SUPABASE.md).
+
 ## Connect models
 
 Copy `.env.example` to `.env` and configure any providers you want to use. Restart the backend after changing environment variables.
@@ -54,13 +56,13 @@ Models see prices, closed candles, instrument rules, available cash, holdings, o
 - Stale, crossed or unavailable data prevents execution. After model latency, execution uses a fresh snapshot and rechecks account limits. A model proposal cannot override order-size or loss checks.
 - The AI order ceiling is a percentage of initial capital, measured before fees. It is not a total portfolio exposure ceiling. A run's equity-loss stop disables new decisions and cancels open orders at the next fresh worker check; it does not liquidate holdings. Holdings and prices may move between checks, so the threshold is not a guaranteed maximum realized loss.
 - Pause stops future AI decisions and aborts an in-flight response. It does not cancel existing orders or sell holdings. Order monitoring continues while the worker runs, regardless of browser/chart state.
-- On restart, pending market orders are cancelled. Resting limit orders resume against fresh depth; fills during downtime are not reconstructed. Account state and audit rows commit in one SQLite transaction.
+- On restart, pending market orders are cancelled. Resting limit orders resume against fresh depth; fills during downtime are not reconstructed. Account state and audit rows commit in one database transaction.
 
-The page displays up to 500 completed orders, 1,000 recent fills and 200 recent journal entries per account. Lifetime fee/count totals remain independent of those buffers. SQLite audit tables retain all saved records; the CSV button exports the visible recent-fill history. Market candles are cached in memory and refetched after restart. Continuous historical depth/tick archiving and gap-complete replay are not included yet.
+The page displays up to 500 completed orders, 1,000 recent fills and 200 recent journal entries per account. Lifetime fee/count totals remain independent of those buffers. Database audit tables retain all saved records; the CSV button exports the visible recent-fill history. Market candles are cached in memory and refetched after restart. Continuous historical depth/tick archiving and gap-complete replay are not included yet.
 
 ## Hosting and access
 
-The frontend can remain on Vercel. A separate worker must have Node 24+, persistent disk and outbound access to the market/model endpoints. To attach it, set frontend build variable `VITE_TRADING_API_URL` to the HTTPS worker URL. The current SQLite store is for one persistent worker. A Postgres store adapter and owner identity integration are needed before using ephemeral/serverless or multi-instance hosting.
+The frontend can remain on Vercel. A separate worker must have Node 24+, Supabase storage or a persistent SQLite disk, and outbound access to the market/model endpoints. To attach it, set frontend build variable `VITE_TRADING_API_URL` to the HTTPS worker URL. The current SQLite store is for one persistent worker. The Supabase adapter supports external account storage and fences duplicate workers. The loop still requires a persistent process; Supabase Auth sign-in is not implemented.
 
 For hosted binding set:
 

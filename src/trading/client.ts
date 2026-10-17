@@ -79,6 +79,8 @@ export interface TradingAccount {
 export interface TradingSnapshot {
   canWrite: boolean;
   serverTime: number;
+  storage: string;
+  storageError: string | null;
   symbols: string[];
   providers: { id: string; label: string; configured: boolean }[];
   accounts: TradingAccount[];

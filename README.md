@@ -1,6 +1,6 @@
 # RunThisPR crypto terminal
 
-React + TypeScript + Vite application with a Node/SQLite paper-trading backend. Live spot-crypto research data comes from Binance market-data-only endpoints, Coinbase Exchange and Kraken Spot WebSocket v2. Orders are simulated inside the backend; no exchange trading credentials or live order endpoints are used.
+React + TypeScript + Vite application with a Node paper-trading backend with SQLite or Supabase storage. Live spot-crypto research data comes from Binance market-data-only endpoints, Coinbase Exchange and Kraken Spot WebSocket v2. Orders are simulated inside the backend; no exchange trading credentials or live order endpoints are used.
 
 ## Local development
 
@@ -27,9 +27,9 @@ The development server is at http://127.0.0.1:5173. `pnpm preview` serves the pr
 - Dark/light themes, responsive layouts, and a building-in-public research roadmap.
 - Paper Trading page: independently funded accounts, Binance USDT market/limit orders, balance reservations, depth-based partial fills, cancellations, decimal accounting, fees, holdings, P&L and recent-fill CSV export.
 - AI Simulations page: multiple simultaneous independent runs, custom starting capital and exact model IDs, provider catalogs, start/pause/resume, risk settings, daily call allowances, activity and decision journals.
-- Persistent single-process Node 24 worker and SQLite account/audit storage. OpenAI, OpenRouter, NVIDIA NIM and local Ollama adapters; model keys remain server-side. NVIDIA's GLM 5.3, DeepSeek V4.1 Flash and Nemotron 3 Ultra presets are selectable per run. Without a configured provider, runs honestly wait for a model connection.
+- Persistent Node 24 worker with SQLite or Supabase account/audit storage. Cloud storage uses atomic saves, revision checks and a single-worker lease. OpenAI, OpenRouter, NVIDIA NIM and local Ollama adapters; model keys remain server-side. NVIDIA's GLM 5.3, DeepSeek V4.1 Flash and Nemotron 3 Ultra presets are selectable per run. Without a configured provider, runs honestly wait for a model connection.
 
-See [backend setup, execution assumptions and hosting options](docs/TRADING_BACKEND.md) before connecting providers or deploying the backend. The loopback-only local worker runs without a hosting bill. A hosted backend and actual model credentials are not provisioned automatically.
+See [Supabase connection and migrations](docs/SUPABASE.md) and [backend setup, execution assumptions and hosting options](docs/TRADING_BACKEND.md) before connecting providers or deploying the backend. The loopback-only local worker runs without a hosting bill. A hosted backend and actual model credentials are not provisioned automatically.
 
 ## Data semantics and limits
 

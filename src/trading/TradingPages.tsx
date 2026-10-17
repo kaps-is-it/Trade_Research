@@ -79,7 +79,7 @@ export function TradingPages({
     [owner, setOwner] = useState(false);
   const accounts = data?.accounts.filter((a) => a.kind === mode) || [],
     account = accounts.find((a) => a.id === selected) || accounts[0];
-  const writable = !!data?.canWrite && !error;
+  const writable = !!data?.canWrite && !error && !data?.storageError;
   useEffect(() => {
     if (mode === "ai" && account) setBase(account.base);
   }, [mode, account?.id, account?.base]);
@@ -112,7 +112,9 @@ export function TradingPages({
           {error
             ? "Trading backend offline"
             : data
-              ? "Trading worker connected"
+              ? data.storageError
+                ? "Trading storage needs attention"
+                : "Trading worker connected"
               : "Connecting to trading worker…"}
           <span className="trading-caption">
             {error
@@ -125,6 +127,13 @@ export function TradingPages({
           {writable ? "Owner access" : "Owner sign in"}
         </button>
       </div>
+      {data?.storageError && (
+        <div className="trading-alert" role="alert">
+          Trading is stopped because storage could not be confirmed. The account
+          view may be out of date. The owner needs to restart the backend to
+          reload saved records.
+        </div>
+      )}
       {error && (
         <div className="trading-setup">
           <Wallet size={22} />
@@ -670,7 +679,7 @@ function CreateAccount({
               />
             </label>
             <label>
-              Daily model call allowance · UTC
+              Maximum AI requests per day
               <input
                 type="number"
                 min="1"
@@ -679,6 +688,9 @@ function CreateAccount({
                 onChange={(e) => setMaxCalls(e.target.value)}
                 required
               />
+              <small>
+                Per simulation. Resets at 00:00 UTC. Failed requests count too.
+              </small>
             </label>
           </>
         )}
