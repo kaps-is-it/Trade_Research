@@ -47,6 +47,12 @@ export class TradingService {
       const legacyDailyCap = "maxCalls" in account;
       delete account.maxCalls;
       if (
+        account.kind === "ai" &&
+        !account.enabled &&
+        account.status === "error"
+      )
+        account.status = "paused";
+      if (
         legacyDailyCap ||
         ["daily_limit", "reading_data", "evaluating"].includes(account.status)
       )
@@ -480,12 +486,14 @@ export class TradingService {
         !controller.signal.aborted
       )
         await this.update(id, (a) => {
+          if (!a.enabled || this.closed) return;
           a.status = "error";
           a.consecutiveErrors = (a.consecutiveErrors || 0) + 1;
           this.record(a, { result: error.message });
         });
       else if (!this.closed && this.accounts.get(id)?.enabled)
         await this.update(id, (a) => {
+          if (!a.enabled || this.closed) return;
           a.status = "error";
           a.consecutiveErrors = (a.consecutiveErrors || 0) + 1;
           this.record(a, {

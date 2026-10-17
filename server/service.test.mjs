@@ -151,6 +151,37 @@ test("large daily counts never stop continuous evaluation; unconfigured provider
     f.store.close();
   }
 });
+
+test("a provider failure racing with pause cannot overwrite the paused status", async () => {
+  let reject, entered;
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const f = fixture(() => {
+    entered();
+    return new Promise((_resolve, fail) => {
+      reject = fail;
+    });
+  });
+  try {
+    const a = await f.create("300");
+    const evaluating = f.service.evaluate(a.id);
+    await started;
+    const pausing = f.service.control(a.id, "pause");
+    reject(new Error("Provider disconnected"));
+    await Promise.all([pausing, evaluating]);
+    const saved = f.service.accounts.get(a.id);
+    assert.equal(saved.enabled, false);
+    assert.equal(saved.status, "paused");
+    assert.equal(
+      saved.journal[0].result,
+      "Run paused. Existing orders remain monitored.",
+    );
+  } finally {
+    await f.service.stop();
+    f.store.close();
+  }
+});
 test("worker loss checks stop a run and cancel pending orders before further execution", async () => {
   const f = fixture(async () => {
     throw new Error("Must not call");
