@@ -49,6 +49,10 @@ Public-display and future AI-use permissions are separate from keyless access. T
 
 ## Deployment
 
-`.openai/hosting.json` binds this checkout to the RunThisPR Site and declares `dist/` as static output. Build, push the matching source, package that build, then save and deploy the exact version through Sites. Keep deployment write credentials in memory/stdin; never commit them. See the parent project's deployment notes for domain setup.
+Production is hosted by the [runthispr Vercel project](https://vercel.com/kapil-patels-projects-dc94f2b1/runthispr), connected to this repository. Pushes to `main` trigger production deployments. Vercel uses the Vite preset, repository root `./`, `pnpm build`, and output directory `dist`. No environment variables are required.
+
+The live site is https://www.runthispr.com; https://runthispr.com redirects there with HTTP 308. Namecheap DNS uses `A @ 216.198.79.1` and `CNAME www 2269b770111b2744.vercel-dns-017.com.`.
+
+`.openai/hosting.json` is retained only as a record of the previous Sites deployment. Both custom domains have been detached from Sites; use Vercel for future production updates.
 
 Charts are rendered using TradingView Lightweight Charts (Apache 2.0). Its built-in attribution remains enabled. Exchange brand names identify data provenance; this is an independent project.
